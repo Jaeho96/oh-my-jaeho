@@ -74,4 +74,8 @@ herdr agent wait <대상> --timeout 600000      # 끝날 때까지 기다리기
 | 받는 쪽이 "Login expired" | 그 세션 로그인 만료 | 사용자에게 알린다. 대신 로그인하지 않는다 |
 | `agent_prompt_stalled` / `timeout` | 시작 신호를 못 봄 | 다시 보내지 말고 `agent read`부터 |
 | `--wait` 없이 보낸 직후 `agent wait`가 바로 끝남 | 받는 쪽이 일을 시작하기 전의 `idle`을 잡음(대기는 차례를 추적하지 않는다) | 처음부터 `prompt --wait`로 보내거나, `agent read`로 「Working」을 확인한 뒤 `agent wait` |
+| 원격에서 `prompt --wait`도 곧바로 `idle`로 돌아옴 | 원격 머신에서도 시작 전 `idle`을 잡는 경우가 있다(2026-10-20 두 번) | 결과로 믿지 말고 몇십 초 뒤 `agent read`로 진행·완료 문구를 확인 |
+| `unknown machine '…'` | `--machine`에 목록 셋째 칸(슬러그)을 줌 | `herdr machine list`의 둘째 칸 이름(예: 「276 맥북」)이나 첫 칸 ID를 쓴다 |
+| 새로 연 탭에 보낸 명령의 첫 글자가 사라짐(`cho: command not found`) | 새 셸의 oh-my-zsh 업데이트 질문이 첫 글자를 답으로 먹음 | `pane read`로 프롬프트가 뜬 것을 본 뒤 보낸다. 여러 줄 명령은 `quote>`에 걸리니 base64 한 줄로. 결과 줄을 읽기 전에 탭을 닫지 않는다 |
+| 원격 Claude가 「신뢰되지 않은 코드」로 레포 스크립트 실행을 막음 | auto 권한 모드의 분류기 | 사용자에게 묻는다. 권한 모드를 바꾸는 것은 사용자 결정이다 |
 | 원격 대상이 안 보임 | 머신 프로필 꺼짐·이름 틀림 | `herdr machine list`로 확인 |

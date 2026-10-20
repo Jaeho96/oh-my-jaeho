@@ -77,8 +77,10 @@ def sync():
         git("rebase", "--abort")
     git("add", "-A")
     rc, _ = git("diff", "--cached", "--quiet")
-    if rc == 0 and os.path.exists(LAST_OK) and os.path.getmtime(LAST_OK) > datetime.datetime.now().timestamp() - MIN_GAP:
-        return 0              # 바뀐 것도 없고 방금 받았다
+    _, unpushed = git("rev-list", "--count", "@{u}..HEAD")
+    if (rc == 0 and unpushed.strip() in ("", "0") and os.path.exists(LAST_OK)
+            and os.path.getmtime(LAST_OK) > datetime.datetime.now().timestamp() - MIN_GAP):
+        return 0              # 바뀐 것도, 안 올린 커밋도 없고 방금 받았다 — 손으로 만든 커밋은 건너뛰지 않는다(2026-10-20)
     if rc != 0:
         _, names = git("diff", "--cached", "--name-only")
         n = len([x for x in names.splitlines() if x])
