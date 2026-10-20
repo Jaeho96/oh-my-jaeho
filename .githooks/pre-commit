@@ -1,0 +1,3 @@
+#!/bin/sh
+# 공개 레포에 올라가면 안 되는 값이 있으면 커밋을 막는다.
+exec python3 "$(git rev-parse --show-toplevel)/tools/check_public.py"

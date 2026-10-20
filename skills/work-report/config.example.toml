@@ -1,0 +1,16 @@
+# config.local.toml 로 복사해서 실제 값을 채운다(커밋 안 됨).
+
+board_path = "~/Documents/Obsidian Vault/업무기록/업무 현황판.md"
+scope = "회사 업무만. 사외 교육·개인 프로젝트는 넣지 않는다."
+
+[meeting_db]
+# 회의록이 있는 곳 (예: Notion 데이터베이스 URL 또는 collection ID)
+source = ""
+
+[my_ids]
+notion_user = ""
+slack_user = ""
+
+[channels]
+# 나를 언급하지 않아도 볼 채널 (이름 = ID)
+watch = {}

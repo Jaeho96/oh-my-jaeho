@@ -1,0 +1,16 @@
+# 기기·회사별 값 (공개 금지)
+*.local.toml
+*.local.txt
+*.local.md
+
+# 실행 부산물
+__pycache__/
+.pytest_cache/
+*.pyc
+*.bak*
+*.omj-backup-*
+.DS_Store
+
+# 스킬이 쓰는 상태 파일
+**/scripts/.*state*.json
+**/scripts/*.lock

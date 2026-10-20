@@ -1,0 +1,19 @@
+# 무엇을 어디에 배포할지 (모든 기기 공통).
+# 이 기기만의 차이는 config.local.toml 에 적는다(커밋 안 함). 예시는 config.local.example.toml.
+
+[targets]
+claude_home = "~/.claude"
+agents_home = "~/.agents"   # Codex 스킬 착지점 (~/.agents/skills)
+
+[skills]
+items = ["session-handoff", "youtube-to-obsidian", "collecting-zoom-clips", "design-compare"]
+platforms = ["claude", "codex"]
+
+[rules]
+items = ["vocabulary", "verification", "troubleshooting-log", "shared-wiki"]
+platforms = ["claude"]
+
+# 낱개 파일. settings.json 이 가리키는 자리에 링크를 건다.
+[[files]]
+src = "statusline/statusline.py"
+dest = "~/.claude/statusline.py"

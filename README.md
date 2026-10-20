@@ -1,0 +1,57 @@
+# oh-my-jaeho
+
+Claude Code와 Codex에서 쓰는 내 스킬·규칙을 한 레포에서 관리하고, 각 도구의 설정 폴더로 연결해 쓰는 개인 라이브러리.
+
+> 아직 v0(러프한 초안)이다. 쓰면서 채워 간다. 할 일은 [docs/roadmap.md](docs/roadmap.md).
+
+## 원칙
+
+1. **고치는 곳은 이 레포 하나.** `~/.claude/skills/…`에서 직접 고치지 않는다. 배포는 심볼릭 링크라 레포를 고치면 바로 반영된다.
+2. **배포한 것만 지운다.** 동기화 도구는 자기가 만든 링크를 `~/.omj/state.json`에 적어 두고, 설정에서 빠진 것만 정리한다. 원래 있던 파일은 건드리지 않는다.
+3. **공개 레포에는 공개해도 되는 것만.** 회사 이름·사람 이름·Slack/Notion ID·고객 데이터·토큰·절대 경로는 넣지 않는다. 그런 값은 `*.local.*` 파일(커밋 안 됨)에 둔다. 커밋 전에 `tools/check_public.py`가 막는다.
+
+## 구조
+
+```
+config.toml                 무엇을 어디에 배포할지 (공용)
+config.local.toml           이 기기만의 추가·제외 (커밋 안 함, 예시: config.local.example.toml)
+skills/<이름>/SKILL.md      스킬 (Claude: ~/.claude/skills, Codex: ~/.agents/skills)
+rules/<이름>.md             항상 따르는 규칙 (Claude: ~/.claude/rules)
+statusline/                 상태줄 등 낱개 파일 (config.toml 의 [[files]])
+tools/sync.py               배포 도구 (Python 3.11+, 추가 설치 없음)
+tools/check_public.py       공개 전 검사 (개인·회사 정보, 토큰, 절대 경로)
+docs/                       설계 메모·로드맵
+```
+
+## 지금 들어 있는 것
+
+| 종류 | 이름 | 내용 |
+|---|---|---|
+| 스킬 | `session-handoff` | 다른 에이전트 세션(같은 맥의 Claude·Codex, 원격 맥)에 일을 맡기고 결과를 받는다. herdr는 초인종, 공유 위키 `raw/`는 우편함 |
+| 스킬 | `youtube-to-obsidian` | 유튜브 자막 → 옵시디언 노트(원문 → 정리본 → 요약) |
+| 스킬 | `collecting-zoom-clips` | Zoom Clips 공유 링크에서 녹취록·챕터·요약을 뽑아 볼트에 저장 |
+| 스킬 | `design-compare` | Claude Design 시안과 로컬 렌더를 대조해 미구현 차이만 골라 반영 |
+| 스킬 | `work-report` | 업무 현황판 기반 일보·주보와 놓친 일 점검 — **v0 뼈대**(실동작 본은 아직 로컬 비공개, 배포 목록에 없음) |
+| 규칙 | `vocabulary` · `verification` · `troubleshooting-log` · `shared-wiki` | 금지 단어, 완료 기준, 문제 해결 기록, Claude·Codex 공유 위키 규칙 |
+| 파일 | `statusline/statusline.py` | Claude Code 상태줄 (`~/.claude/statusline.py`로 연결) |
+
+레포 밖에서 따로 설치해 쓰는 플러그인·스킬은 [docs/external.md](docs/external.md).
+
+## 쓰는 법
+
+```bash
+python3 tools/sync.py            # 미리보기 (아무것도 바꾸지 않음)
+python3 tools/sync.py --apply    # 링크 만들기·정리
+git config core.hooksPath .githooks   # 커밋 전 공개 검사 켜기 (처음 한 번)
+```
+
+- 같은 이름의 폴더가 이미 있으면(예: 예전에 직접 넣은 스킬) 건너뛰고 「충돌」로 알려 준다. 옮겨도 되면 `--backup-existing`을 붙이면 원래 것을 `*.omj-backup-<시각>`으로 옮기고 링크를 건다.
+- 기기마다 다른 것은 `config.local.toml`에 적는다. 예: 회사 맥에서만 `work-report`를 켠다.
+
+## 참고
+
+[toongri/oh-my-toong-playground](https://github.com/toongri/oh-my-toong-playground)의 생각(중앙 라이브러리, 선언적 동기화, 배포한 것만 정리, 기기별 로컬 오버라이드)을 빌렸다. 코드는 가져오지 않았다.
+
+## 라이선스
+
+MIT
