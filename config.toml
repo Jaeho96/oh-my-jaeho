@@ -16,7 +16,9 @@ items = [
 ]
 
 [rules]
-items = ["vocabulary", "verification", "troubleshooting-log", "shared-wiki"]
+# 공유 위키 규칙은 여기 두지 않는다. 연결 지점은 ~/.claude/CLAUDE.md · ~/.codex/AGENTS.md 의
+# SHARED-LLM-WIKI 블록이다(위키 README 의 설치·되돌리기 절차가 이 블록 기준).
+items = ["vocabulary", "verification", "troubleshooting-log"]
 platforms = ["claude"]
 
 # 낱개 파일. settings.json 이 가리키는 자리에 링크를 건다.

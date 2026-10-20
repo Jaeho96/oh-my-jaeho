@@ -113,6 +113,11 @@ def main() -> int:
     want, warns = desired_links(cfg)
     state = load_state()
     owned: dict[str, str] = state.get("links", {})
+    # 레포를 옮기거나 지우면 링크가 끊겨 규칙·스킬이 조용히 사라진다
+    for key in owned:
+        p = Path(key)
+        if p.is_symlink() and not p.exists():
+            warns.append(f"끊긴 링크: {key} → {os.readlink(p)} (레포 위치를 확인)")
     stamp = time.strftime("%Y%m%d%H%M%S")
     plan: list[tuple[str, str]] = []
     conflicts = 0

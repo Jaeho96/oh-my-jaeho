@@ -30,7 +30,7 @@ herdr --machine "<저장된 머신 이름>" agent list     # 원격 맥 (herdr m
 
 ### 2. 요청서 쓰기
 
-공유 위키 `raw/`에 쓴다(위치는 `shared-wiki` 규칙). 파일명: `YYYYMMDDTHHMMSS-<보내는 도구>-handoff-<주제>-<고유값>.md`
+공유 위키 `raw/`에 쓴다(위치·규칙은 전역 지침의 공유 위키 블록과 위키 안 `PROTOCOL.md`, 기본 위치 `~/Documents/Obsidian Vault/LLM Wiki`). 파일명: `YYYYMMDDTHHMMSS-<보내는 도구>-handoff-<주제>-<고유값>.md`
 
 ```markdown
 ---
