@@ -6,8 +6,14 @@ claude_home = "~/.claude"
 agents_home = "~/.agents"   # Codex 스킬 착지점 (~/.agents/skills)
 
 [skills]
-items = ["session-handoff", "youtube-to-obsidian", "collecting-zoom-clips", "design-compare"]
 platforms = ["claude", "codex"]
+items = [
+  "session-handoff",
+  "youtube-to-obsidian",
+  "collecting-zoom-clips",
+  # Claude 에서는 settings.json skillOverrides 로 꺼 둔 스킬이다. Codex 는 그 설정을 모르니 Codex 에는 배포하지 않는다.
+  { name = "design-compare", platforms = ["claude"] },
+]
 
 [rules]
 items = ["vocabulary", "verification", "troubleshooting-log", "shared-wiki"]

@@ -17,6 +17,8 @@
 | reverse-engineer-anything | `~/.agents/skills` | REA |
 | Cloudflare 스킬 묶음 (agents-sdk, wrangler, durable-objects 등) | `~/.claude/skills`, `~/.codex/skills` | Cloudflare 공식 |
 
+Claude 에서 꺼 둔 스킬(`~/.claude/settings.json` 의 `skillOverrides: off`): Cloudflare 묶음, find-skills, collecting-loopers-rt, design-compare. 꺼 둔 스킬은 Codex 에도 배포하지 않는다(Codex 는 이 설정을 모른다).
+
 ## 도구
 - herdr — 터미널 작업 공간, 세션 간 요청(`session-handoff` 스킬)
 - Orca — `~/.claude/settings.json` 의 훅을 넣은 도구

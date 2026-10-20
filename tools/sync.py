@@ -3,7 +3,7 @@
 
 - 기본은 미리보기. --apply 를 줘야 바꾼다.
 - 자기가 만든 링크만 ~/.omj/state.json 에 적고, 설정에서 빠진 것만 지운다.
-- 같은 자리에 원래 파일·폴더가 있으면 건너뛰고 「충돌」로 알린다. --backup-existing 이면 옮기고 링크를 건다.
+- 같은 자리에 원래 파일·폴더가 있으면 건너뛰고 「충돌」로 알린다. --backup-existing 이면 ~/.omj/backups/<시각>/ 로 옮기고 링크를 건다.
 """
 from __future__ import annotations
 
@@ -17,6 +17,16 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 STATE = Path.home() / ".omj" / "state.json"
+# 백업은 배포 자리 밖에 둔다. ~/.claude/skills 안에 두면 같은 이름 스킬이 둘로 잡힌다.
+BACKUPS = Path.home() / ".omj" / "backups"
+
+
+def backup_path(dest: Path, stamp: str) -> Path:
+    try:
+        rel = dest.relative_to(Path.home())
+    except ValueError:
+        rel = Path(*dest.parts[1:])
+    return BACKUPS / stamp / rel
 
 
 def load_config() -> dict:
@@ -30,10 +40,11 @@ def load_config() -> dict:
                 continue
             base = cfg.setdefault(section, {})
             items = list(base.get("items", []))
-            for name in values.get("add", []):
-                if name not in items:
-                    items.append(name)
-            items = [n for n in items if n not in values.get("remove", [])]
+            key = lambda i: i["name"] if isinstance(i, dict) else i
+            for item in values.get("add", []):
+                if key(item) not in {key(i) for i in items}:
+                    items.append(item)
+            items = [i for i in items if key(i) not in values.get("remove", [])]
             base.update({k: v for k, v in values.items() if k not in ("add", "remove")})
             if "items" not in values:
                 base["items"] = items
@@ -48,12 +59,15 @@ def desired_links(cfg: dict) -> tuple[list[tuple[Path, Path]], list[str]]:
     links, warns = [], []
 
     sk = cfg.get("skills", {})
-    for name in sk.get("items", []):
+    for item in sk.get("items", []):
+        # 문자열이면 공용 platforms, { name = "...", platforms = [...] } 이면 그 스킬만 따로
+        name = item["name"] if isinstance(item, dict) else item
+        platforms = item.get("platforms", sk.get("platforms", ["claude"])) if isinstance(item, dict) else sk.get("platforms", ["claude"])
         src = REPO / "skills" / name
         if not (src / "SKILL.md").exists():
             warns.append(f"스킬 원본 없음: skills/{name}/SKILL.md")
             continue
-        for p in sk.get("platforms", ["claude"]):
+        for p in platforms:
             if p == "claude":
                 links.append((claude / "skills" / name, src))
             elif p == "codex":
@@ -121,7 +135,7 @@ def main() -> int:
                 plan.append(("충돌(원래 있음)", key))
                 conflicts += 1
                 continue
-            plan.append(("옮기고 연결", f"{key} → {key}.omj-backup-{stamp}"))
+            plan.append(("옮기고 연결", f"{key} → {backup_path(dest, stamp)}"))
         else:
             plan.append(("새로 연결", f"{key} → {src}"))
         if args.apply:
@@ -129,7 +143,9 @@ def main() -> int:
             if dest.is_symlink():
                 dest.unlink()
             elif dest.exists():
-                dest.rename(dest.with_name(f"{dest.name}.omj-backup-{stamp}"))
+                bk = backup_path(dest, stamp)
+                bk.parent.mkdir(parents=True, exist_ok=True)
+                dest.rename(bk)
             dest.symlink_to(src)
         owned[key] = str(src)
 

@@ -45,7 +45,7 @@ python3 tools/sync.py --apply    # 링크 만들기·정리
 git config core.hooksPath .githooks   # 커밋 전 공개 검사 켜기 (처음 한 번)
 ```
 
-- 같은 이름의 폴더가 이미 있으면(예: 예전에 직접 넣은 스킬) 건너뛰고 「충돌」로 알려 준다. 옮겨도 되면 `--backup-existing`을 붙이면 원래 것을 `*.omj-backup-<시각>`으로 옮기고 링크를 건다.
+- 같은 이름의 폴더가 이미 있으면(예: 예전에 직접 넣은 스킬) 건너뛰고 「충돌」로 알려 준다. 옮겨도 되면 `--backup-existing`을 붙이면 원래 것을 `~/.omj/backups/<시각>/`으로 옮기고 링크를 건다(배포 자리 안에 백업을 두면 같은 이름 스킬이 둘로 잡혀서 밖에 둔다).
 - 기기마다 다른 것은 `config.local.toml`에 적는다. 예: 회사 맥에서만 `work-report`를 켠다.
 
 ## 참고
