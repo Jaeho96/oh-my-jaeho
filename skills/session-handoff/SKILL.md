@@ -73,4 +73,5 @@ herdr agent wait <대상> --timeout 600000      # 끝날 때까지 기다리기
 | `agent_blocked` | 받는 쪽이 승인·질문 화면 | `agent read`로 화면을 보고 사용자에게 묻는다 |
 | 받는 쪽이 "Login expired" | 그 세션 로그인 만료 | 사용자에게 알린다. 대신 로그인하지 않는다 |
 | `agent_prompt_stalled` / `timeout` | 시작 신호를 못 봄 | 다시 보내지 말고 `agent read`부터 |
+| `--wait` 없이 보낸 직후 `agent wait`가 바로 끝남 | 받는 쪽이 일을 시작하기 전의 `idle`을 잡음(대기는 차례를 추적하지 않는다) | 처음부터 `prompt --wait`로 보내거나, `agent read`로 「Working」을 확인한 뒤 `agent wait` |
 | 원격 대상이 안 보임 | 머신 프로필 꺼짐·이름 틀림 | `herdr machine list`로 확인 |

@@ -50,6 +50,21 @@ git config core.hooksPath .githooks   # 커밋 전 공개 검사 켜기 (처음 
 - 같은 이름의 폴더가 이미 있으면(예: 예전에 직접 넣은 스킬) 건너뛰고 「충돌」로 알려 준다. 옮겨도 되면 `--backup-existing`을 붙이면 원래 것을 `~/.omj/backups/<시각>/`으로 옮기고 링크를 건다(배포 자리 안에 백업을 두면 같은 이름 스킬이 둘로 잡혀서 밖에 둔다).
 - 기기마다 다른 것은 `config.local.toml`에 적는다. 예: 회사 맥에서만 `work-report`를 켠다.
 
+## 공유 위키를 여러 맥에서 쓰기
+
+Claude Code·Codex가 함께 쓰는 마크다운 위키(작업 기록 `raw/`, 지식 `omx_wiki/`) 폴더를 비공개 git 저장소로 두고 여러 맥에서 맞춘다.
+
+```bash
+python3 tools/sync.py --apply                                        # 훅 파일 링크 (~/.claude/hooks/)
+python3 tools/wiki_setup.py --repo <비공개 위키 저장소> --blocks --apply   # clone(또는 확인) + 전역 지침 블록
+python3 tools/wiki_hooks.py --apply                                  # Claude settings.json · Codex hooks.json 에 훅 등록
+```
+
+- `hooks/wiki_log_guard.py` — Stop 훅. 파일을 고쳤거나 도구를 여러 번 썼는데 위키 기록이 없으면 끝내지 말고 기록하라고 한 번 되돌려 보낸다. 예약 작업 세션·재진입·오류는 통과.
+- `tools/wiki_sync.py --detach` — 세션 시작에 받고 작업 끝에 커밋·올린다. 충돌이면 멈추고 위키 폴더 `.sync-error` 에 남긴다.
+- launchd·cron 은 쓰지 않는다. macOS 개인정보 보호가 백그라운드 작업의 `~/Documents` 접근을 막는다. 훅은 터미널 권한을 물려받는다.
+- Codex 는 새 훅을 처음 볼 때 신뢰(Trust) 승인을 한 번 묻는다.
+
 ## 참고
 
 [toongri/oh-my-toong-playground](https://github.com/toongri/oh-my-toong-playground)의 생각(중앙 라이브러리, 선언적 동기화, 배포한 것만 정리, 기기별 로컬 오버라이드)을 빌렸다. 코드는 가져오지 않았다.

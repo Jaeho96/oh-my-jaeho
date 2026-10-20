@@ -25,3 +25,12 @@ platforms = ["claude"]
 [[files]]
 src = "statusline/statusline.py"
 dest = "~/.claude/statusline.py"
+
+# 공유 LLM Wiki 훅 — Claude settings.json 과 Codex hooks.json 이 둘 다 이 자리를 부른다 (2026-10-20)
+[[files]]
+src = "hooks/wiki_log_guard.py"
+dest = "~/.claude/hooks/wiki_log_guard.py"
+
+[[files]]
+src = "tools/wiki_sync.py"
+dest = "~/.claude/hooks/wiki_sync.py"
