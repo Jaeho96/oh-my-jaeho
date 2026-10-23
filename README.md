@@ -32,7 +32,7 @@ docs/                       설계 메모·로드맵
 | 스킬 | `collecting-zoom-clips` | Zoom Clips 공유 링크에서 녹취록·챕터·요약을 뽑아 볼트에 저장 |
 | 스킬 | `design-compare` | Claude Design 시안과 로컬 렌더를 대조해 미구현 차이만 골라 반영 |
 | 스킬 | `work-report` | 업무 현황판 기반 일보·주보와 놓친 일 점검 — **v0 뼈대**(실동작 본은 아직 로컬 비공개, 배포 목록에 없음) |
-| 규칙 | `vocabulary` · `verification` · `troubleshooting-log` | 금지 단어, 작업 원칙과 완료 기준, 문제 해결 기록 |
+| 규칙 | `vocabulary` · `verification` · `troubleshooting-log` · `writing` | 금지 단어, 작업 원칙과 완료 기준, 문제 해결 기록, 두괄식 쓰기 |
 | 파일 | `statusline/statusline.py` | Claude Code 상태줄 (`~/.claude/statusline.py`로 연결) |
 
 레포 밖에서 따로 설치해 쓰는 플러그인·스킬은 [docs/external.md](docs/external.md).
