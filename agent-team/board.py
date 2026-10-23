@@ -9,29 +9,43 @@
 - 그 밖의 Codex 스레드: `codex app-server`(stdio) thread/list — sourceKinds 를 다 적어야 exec·하위 에이전트까지 온다
 - 공유 작업 기록: LLM Wiki raw/*.md 의 frontmatter(task_id·status·title) 최근 N시간
 
-보드는 파일을 쓰지 않는다. 다만 `codex app-server` 를 띄우므로 Codex 쪽 상태 DB 는 Codex 가 스스로 갱신할 수 있다.
-기본은 127.0.0.1 에만 묶는다. 다른 주소는 --allow-remote 를 줘야 한다(인증이 없다).
+- 사무실: office.py 가 Codex 세션 기록과 Claude Code 대화 기록을 같은 이벤트로 읽어 캐릭터 상태를 만든다(1초마다)
+
+화면은 web/(React·Vite·TypeScript) 빌드 결과(web/dist)를 그대로 내보낸다. 데이터는 /api/state 와 SSE(/events)로 준다.
+데이터 길은 토큰이 있어야 열린다(?t= 또는 X-Board-Token). 토큰은 ~/.omj/agent-team/board.token(0600)에 둔다.
+보드는 토큰 파일 말고는 파일을 쓰지 않는다. 다만 `codex app-server` 를 띄우므로 Codex 쪽 상태 DB 는 Codex 가 스스로 갱신할 수 있다.
+기본은 127.0.0.1 에만 묶는다. 다른 주소는 --allow-remote 를 줘야 한다.
 표준 라이브러리만 쓴다. Python 3.9 에서 돈다.
 """
 import argparse
 import glob
+import hmac
 import ipaddress
 import json
 import os
 import queue
 import re
+import secrets
 import subprocess
+import sys
 import threading
 import time
 from collections import Counter
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import office  # noqa: E402  같은 폴더의 사무실 데이터 모듈
 
 SOURCE_KINDS = ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact",
                 "subAgentThreadSpawn", "subAgentOther", "unknown"]
 DEFAULT_WIKI = "~/Documents/Obsidian Vault/LLM Wiki"
 DEFAULT_RUNS = "~/.omj/agent-team/runs"
 DEFAULT_SESSIONS = "~/.codex/sessions"
+DEFAULT_CLAUDE = "~/.claude/projects"
+DEFAULT_TOKEN_FILE = "~/.omj/agent-team/board.token"
 KST = timezone(timedelta(hours=9))
 
 
@@ -606,6 +620,7 @@ def parse_frontmatter(text):
 
 # ---------- 수집기 ----------
 
+
 class State:
     """수집기마다 스레드 하나. 실패하면 마지막 성공값을 두고 오류만 적는다."""
 
@@ -613,6 +628,7 @@ class State:
         self.args = args
         self.codex = CodexThreads()
         self.rollouts = Rollouts(args.sessions)
+        self.registry = office.Registry(args.sessions, args.claude, active_min=args.office_min, stall_sec=args.stall_sec)
         self.lock = threading.Lock()
         self.slots = {}      # 이름 → {"value", "at", "error"}
         self.team_ids = set()
@@ -624,6 +640,10 @@ class State:
                 slot.update(value=value, at=now_iso(), error=None)
             else:
                 slot["error"] = error
+
+    def value(self, name):
+        with self.lock:
+            return (self.slots.get(name) or {}).get("value")
 
     def loop(self, name, fn, every):
         while True:
@@ -646,109 +666,140 @@ class State:
         tree, hidden = build_tree(threads, self.args.hours, self.args.hide_re, ids)
         return {"tree": tree, "hidden": hidden, "total": len(threads)}
 
+    def collect_office(self):
+        self.registry.refresh()
+        return office.build_office(self.registry, time.time(), sessions=self.value("sessions"), runs=self.value("runs"),
+                                   local_label=self.args.local_label, active_min=self.args.office_min,
+                                   hide_re=self.args.hide_re)
+
     def start(self):
         r = self.args.refresh
-        for name, fn, every in (("runs", self.collect_runs, r), ("threads", self.collect_threads, r * 2),
+        for name, fn, every in (("office", self.collect_office, 1),
+                                ("runs", self.collect_runs, r), ("threads", self.collect_threads, r * 2),
                                 ("sessions", lambda: collect_herdr(self.args.machines, self.args.local_label), r * 2),
                                 ("wiki", lambda: collect_wiki(os.path.join(self.args.wiki, "raw"), hours=self.args.hours), r * 3)):
             threading.Thread(target=self.loop, args=(name, fn, every), daemon=True).start()
 
-    def snapshot(self):
+    def payload(self):
+        """시각을 뺀 상태. SSE 는 이것이 바뀔 때만 보낸다."""
         with self.lock:
-            data = {"generated_at": now_iso(), "refresh_sec": self.args.refresh,
+            data = {"refreshSec": self.args.refresh,
                     "slots": {k: {"at": v["at"], "error": v["error"]} for k, v in self.slots.items()}}
             for k, v in self.slots.items():
                 data[k] = v["value"]
-            return json.dumps(data, ensure_ascii=False)
+        for slot in data["slots"].values():
+            slot.pop("at", None)
+        return data
+
+    def snapshot(self):
+        data = self.payload()
+        data["generatedAt"] = now_iso()
+        return json.dumps(data, ensure_ascii=False)
 
 
 # ---------- HTTP ----------
 
-PAGE = r"""<!doctype html>
-<html lang="ko"><head><meta charset="utf-8"><title>에이전트 팀 보드</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-:root{--bg:#f6f7f9;--card:#fff;--fg:#1c1e21;--muted:#6b7280;--line:#e5e7eb;--ok:#15803d;--warn:#b45309;--bad:#b91c1c;--run:#1d4ed8;--acc:#4f46e5}
-@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a21;--fg:#e5e7eb;--muted:#9ca3af;--line:#2a2f3a;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--run:#60a5fa;--acc:#a5b4fc}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,"Apple SD Gothic Neo",sans-serif}
-header{display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--line)}
-header h1{font-size:16px;margin:0}header .meta{color:var(--muted);font-size:12px}
-main{display:grid;grid-template-columns:1.5fr 1fr 0.9fr;gap:12px;padding:12px 16px}
-@media (max-width:1100px){main{grid-template-columns:1fr}}
-section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;min-height:160px;min-width:0}
-h2{font-size:13px;margin:0 0 8px;color:var(--muted);letter-spacing:.02em}
-h3{font-size:12px;margin:14px 0 6px;color:var(--muted)}
-.row{padding:6px 8px;border-radius:8px;margin:2px 0}.row:hover{background:var(--bg)}
-.run{border:1px solid var(--line);border-radius:10px;padding:10px;margin:0 0 10px}
-.node{margin:6px 0 0;padding:6px 8px;border-left:3px solid var(--line);border-radius:6px}
-.child{margin-left:18px;border-left-color:var(--acc)}
-.badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:999px;border:1px solid var(--line);color:var(--muted);margin:0 4px 2px 0}
-.s-running,.s-working,.s-active{color:var(--run);border-color:var(--run)}
-.s-done,.s-completed,.s-idle{color:var(--ok);border-color:var(--ok)}
-.s-error,.s-errored,.s-blocked,.s-failed{color:var(--bad);border-color:var(--bad)}
-.s-stale,.s-notLoaded,.s-progress,.s-started,.s-unknown{color:var(--warn);border-color:var(--warn)}
-.muted{color:var(--muted);font-size:12px}.err{color:var(--bad);font-size:12px}
-.nums{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:4px}.nums b{color:var(--fg);font-weight:600}
-pre{white-space:pre-wrap;font:12px/1.4 ui-monospace,Menlo,monospace;background:var(--bg);padding:8px;border-radius:6px;max-height:260px;overflow:auto;margin:6px 0 0}
-details summary{cursor:pointer;color:var(--muted);font-size:12px}
-</style></head><body>
-<header><h1>에이전트 팀 보드</h1><span class="meta" id="meta">불러오는 중…</span></header>
-<main>
-<section><h2>팀 실행 — 매니저와 하위 에이전트</h2><div id="runs"></div><h3>그 밖의 Codex 스레드</h3><div id="tree"></div></section>
-<section><h2>공유 작업 기록 — LLM Wiki raw</h2><div id="wiki"></div></section>
-<section><h2>세션 — herdr</h2><div id="sessions"></div></section>
-</main>
-<script>
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const badge=(t,cls)=>t?`<span class="badge ${cls?'s-'+esc(cls):''}">${esc(t)}</span>`:'';
-const n=v=>typeof v==='number'?v.toLocaleString():'-';
-const k=v=>typeof v==='number'?(v>=1e6?(v/1e6).toFixed(2)+'M':v>=1e3?(v/1e3).toFixed(1)+'k':String(v)):'-';
-const dur=s=>s==null?'-':s<60?s+'초':Math.floor(s/60)+'분 '+(s%60)+'초';
-const ago=iso=>{if(!iso)return'';const d=(Date.now()-new Date(iso).getTime())/1000;if(d<60)return Math.round(d)+'초 전';if(d<3600)return Math.round(d/60)+'분 전';if(d<86400)return Math.round(d/3600)+'시간 전';return Math.round(d/86400)+'일 전'};
-const last=p=>(p||'').split('/').filter(Boolean).slice(-2).join('/');
-function member(m,child){const t=m.tokens||{};const tools=Object.entries(m.tools||{}).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([x,c])=>x+' '+c).join(' · ');
- return `<div class="node ${child?'child':''}">${badge(m.state,m.state)}${badge(child?(m.role||'agent'):'매니저')}${badge(m.nickname)}${badge((m.models||[]).join('/')+((m.efforts||[]).length?' · '+m.efforts.join('/'):''))}
- <div class="nums"><span>토큰 <b>${k(t.total_tokens)}</b></span><span>캐시 ${k(t.cached_input_tokens)}</span><span>출력 <b>${k(t.output_tokens)}</b></span><span>도구 ${n(m.tool_calls)}</span>${m.updated?`<span>${ago(m.updated)}</span>`:''}</div>
- ${tools?`<div class="muted">${esc(tools)}</div>`:''}
- ${m.last_message?`<details><summary>${child?'보고':'최종 보고'} 보기</summary><pre>${esc(m.last_message)}</pre></details>`:''}
- ${(m.children||[]).map(c=>member(c,true)).join('')}</div>`}
-function run(r){const m=r.meta||{};const tt=r.team_tokens||{};
- return `<div class="run">${badge(r.state,r.state)}${badge(m.mode)}${badge(m.model?(m.model+(m.effort?' · '+m.effort:'')):'')}${m.write?badge('쓰기'):badge('읽기 전용')}<b>${esc(r.name)}</b>
- <div class="nums"><span>걸린 시간 <b>${dur(r.elapsed_sec)}</b></span><span>에이전트 <b>${1+(r.members||0)}</b></span><span>합계 토큰 <b>${k(tt.total_tokens)}</b></span><span>출력 <b>${k(tt.output_tokens)}</b></span>${m.exit_code!=null?`<span>종료 코드 ${esc(m.exit_code)}</span>`:''}</div>
- ${m.task?`<div class="muted">${esc(m.task.slice(0,180))}</div>`:''}
- ${r.collect_error||m.error?`<div class="err">${esc(r.collect_error||m.error)}</div>`:''}
- ${r.unknown&&Object.keys(r.unknown).length?`<div class="err">모르는 이벤트: ${esc(Object.keys(r.unknown).join(', '))}</div>`:''}
- ${r.team?member(r.team,false):'<div class="muted">세션 기록을 아직 못 찾음</div>'}
- ${r.final?`<details><summary>결과 문서(.last.md)</summary><pre>${esc(r.final)}</pre></details>`:''}</div>`}
-function node(t,child){return `<div class="node ${child?'child':''}">${badge(t.status,t.status)}${badge(t.role)}${badge(t.nickname)}${badge(t.model?(t.model+(t.effort?' · '+t.effort:'')):'')}${t.source==='spawn'?badge('spawn'):''}<div>${esc(t.name||t.preview||t.id)}</div><div class="muted">${esc(last(t.cwd))} · ${ago(t.updatedAt)}</div>${(t.children||[]).map(c=>node(c,true)).join('')}</div>`}
-function wiki(ts){return (ts||[]).map(t=>`<div class="row">${badge(t.latest.status||'?',t.latest.status)}<b>${esc(t.task_id)}</b> <span class="muted">${t.count}건 · ${esc(t.authors.join(','))}${t.latest.machine?' · '+esc(t.latest.machine):''}</span><div>${esc(t.latest.title)}</div><div class="muted">${esc(t.latest.file)}</div></div>`).join('')||'<div class="muted">최근 기록 없음</div>'}
-function sess(s){if(!s)return'';let h='';if(s.error)h+=`<div class="err">${esc(s.error)}</div>`;h+=`<div class="muted">${esc(s.local_label||'이 맥')}</div>`+(s.local||[]).map(a=>`<div class="row">${badge(a.status,a.status)}${badge(a.agent)}${badge(a.name)}<b>${esc(a.pane)}</b> ${esc(a.title)}<div class="muted">${esc(last(a.cwd))}</div></div>`).join('');for(const [m,v] of Object.entries(s.remote||{})){h+=`<div class="muted" style="margin-top:8px">${esc(m)}</div>`;if(v.error){h+=`<div class="err">${esc(v.error)}</div>`;continue}h+=v.map(a=>`<div class="row">${badge(a.status,a.status)}${badge(a.agent)}<b>${esc(a.pane)}</b> ${esc(a.title)}</div>`).join('')}return h}
-const slotErr=(d,name)=>d.slots?.[name]?.error?`<div class="err">${esc(name)}: ${esc(d.slots[name].error)}</div>`:'';
-async function tick(){try{const r=await fetch('/api/state');const d=await r.json();
- const th=d.threads||{};document.getElementById('meta').textContent=`갱신 ${d.generated_at||'-'} · ${d.refresh_sec}초마다 · 그 밖의 Codex 스레드 ${th.total??'-'}개`;
- document.getElementById('runs').innerHTML=slotErr(d,'runs')+((d.runs||[]).map(run).join('')||'<div class="muted">실행 기록 없음 — run_team.py 로 시작하면 여기 뜹니다</div>');
- document.getElementById('tree').innerHTML=slotErr(d,'threads')+((th.tree||[]).map(t=>node(t,false)).join('')||'<div class="muted">최근 스레드 없음</div>')+(th.hidden?`<div class="muted">자동 리뷰 스레드 ${th.hidden}개 숨김</div>`:'');
- document.getElementById('wiki').innerHTML=slotErr(d,'wiki')+wiki(d.wiki);
- document.getElementById('sessions').innerHTML=slotErr(d,'sessions')+sess(d.sessions)}catch(e){document.getElementById('meta').textContent='보드 서버에 닿지 않음: '+e}}
-tick();setInterval(tick,3000);
-</script></body></html>"""
+FALLBACK_PAGE = """<!doctype html><html lang="ko"><meta charset="utf-8"><title>에이전트 팀 보드</title>
+<body style="font:14px -apple-system,sans-serif;padding:24px">
+<h1 style="font-size:16px">화면 빌드가 아직 없습니다</h1>
+<p>보드 서버는 돌고 있습니다. 화면을 만들려면:</p>
+<pre>cd agent-team/web &amp;&amp; npm ci &amp;&amp; npm run build</pre>
+<p>데이터는 <code>/api/state?t=&lt;토큰&gt;</code> 에서 볼 수 있습니다.</p></body></html>"""
+
+CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+                 ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json",
+                 ".woff2": "font/woff2", ".map": "application/json"}
 
 
-def make_handler(state):
+def load_token(path, given=None):
+    """토큰: --token 이 있으면 그것, 없으면 파일(0600)에서 읽고, 파일도 없으면 새로 만든다."""
+    if given:
+        return given
+    try:
+        with open(path, encoding="utf-8") as f:
+            tok = f.read().strip()
+        if tok:
+            return tok
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tok = secrets.token_urlsafe(18)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(tok + "\n")
+    return tok
+
+
+def static_path(dist, url_path):
+    """빌드 폴더 안의 파일만 돌려준다(경로 밖으로 나가는 요청은 None)."""
+    rel = url_path.lstrip("/") or "index.html"
+    full = os.path.realpath(os.path.join(dist, rel))
+    root = os.path.realpath(dist)
+    if not full.startswith(root + os.sep) or not os.path.isfile(full):
+        return None
+    return full
+
+
+def make_handler(state, token, dist):
     class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path.startswith("/api/state"):
-                body = state.snapshot().encode("utf-8")
-                ctype = "application/json; charset=utf-8"
-            else:
-                body = PAGE.encode("utf-8")
-                ctype = "text/html; charset=utf-8"
-            self.send_response(200)
+        def _send(self, code, body, ctype, extra=None):
+            self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(body)
+
+        def _authorized(self, query):
+            got = (parse_qs(query).get("t") or [""])[0] or self.headers.get("X-Board-Token", "")
+            return hmac.compare_digest(got.encode(), token.encode())
+
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            path = parsed.path
+            if path.startswith("/api/") or path == "/events":
+                if not self._authorized(parsed.query):
+                    return self._send(401, b'{"error":"token required"}', "application/json; charset=utf-8")
+                if path == "/api/state":
+                    return self._send(200, state.snapshot().encode("utf-8"), "application/json; charset=utf-8")
+                if path == "/events":
+                    return self._stream()
+                return self._send(404, b'{"error":"not found"}', "application/json; charset=utf-8")
+            full = static_path(dist, "index.html" if path in ("/", "/index.html") else path)
+            if full is None:
+                if path in ("/", "/index.html"):
+                    return self._send(200, FALLBACK_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+                return self._send(404, b"not found", "text/plain; charset=utf-8")
+            with open(full, "rb") as f:
+                body = f.read()
+            ctype = CONTENT_TYPES.get(os.path.splitext(full)[1], "application/octet-stream")
+            self._send(200, body, ctype)
+
+        def _stream(self):
+            """SSE: 상태가 바뀔 때만 보낸다. 15초마다 주석 한 줄로 연결을 확인한다."""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            last, last_beat = None, time.monotonic()
+            try:
+                while True:
+                    body = json.dumps(state.payload(), ensure_ascii=False, sort_keys=True)
+                    if body != last:
+                        self.wfile.write(("event: state\ndata: %s\n\n" % state.snapshot()).encode("utf-8"))
+                        self.wfile.flush()
+                        last, last_beat = body, time.monotonic()
+                    elif time.monotonic() - last_beat > 15:
+                        self.wfile.write(b": keep-alive\n\n")
+                        self.wfile.flush()
+                        last_beat = time.monotonic()
+                    time.sleep(1)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
 
         def log_message(self, fmt, *args):  # 요청 로그는 조용히
             return
@@ -769,33 +820,42 @@ def main():
     ap = argparse.ArgumentParser(description="에이전트 팀 보드 (로컬 웹)")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--allow-remote", action="store_true", help="127.0.0.1 밖에 묶는 것을 허용한다(인증 없음 — 작업 내용이 보인다)")
-    ap.add_argument("--refresh", type=int, default=3, help="수집 주기(초, 1 이상)")
-    ap.add_argument("--hours", type=int, default=24, help="보여 줄 최근 범위(시간)")
+    ap.add_argument("--allow-remote", action="store_true", help="127.0.0.1 밖에 묶는 것을 허용한다(토큰만으로 막는다)")
+    ap.add_argument("--refresh", type=int, default=3, help="수집 주기(초, 1 이상). 사무실은 1초마다")
+    ap.add_argument("--hours", type=int, default=24, help="목록에 보여 줄 최근 범위(시간)")
+    ap.add_argument("--office-min", type=int, default=60, help="사무실에 앉힐 범위 — 최근 N분 안에 움직인 세션")
+    ap.add_argument("--stall-sec", type=int, default=600, help="일하는 중인데 이 초 동안 소식이 없으면 「멈춤 의심」")
     ap.add_argument("--wiki", default=os.environ.get("AGENT_BOARD_WIKI", DEFAULT_WIKI))
     ap.add_argument("--runs", default=os.environ.get("AGENT_BOARD_RUNS", DEFAULT_RUNS))
     ap.add_argument("--sessions", default=os.environ.get("AGENT_BOARD_SESSIONS", DEFAULT_SESSIONS), help="Codex 세션 기록 폴더")
+    ap.add_argument("--claude", default=os.environ.get("AGENT_BOARD_CLAUDE", DEFAULT_CLAUDE), help="Claude Code 대화 기록 폴더")
     ap.add_argument("--machines", default=os.environ.get("AGENT_BOARD_MACHINES", ""),
                     help="herdr 원격 머신. 'herdr 이름=화면 이름' 을 쉼표로 (화면 이름은 생략 가능)")
     ap.add_argument("--local-label", default=os.environ.get("AGENT_BOARD_LOCAL_LABEL", "이 맥"), help="이 맥의 화면 이름")
     ap.add_argument("--thread-limit", type=int, default=100)
-    ap.add_argument("--hide-pattern", default=r"^Codex Companion Task",
-                    help="그 밖의 스레드에서 개수만 셀 루트 이름(정규식). 빈 문자열이면 모두 보여 준다")
+    ap.add_argument("--hide-pattern", default=r"^(Codex Companion Task|Run a stop-gate review)",
+                    help="혼자인 세션 중 이름이 맞으면 개수만 센다(정규식). 빈 문자열이면 모두 보여 준다")
+    ap.add_argument("--token-file", default=os.environ.get("AGENT_BOARD_TOKEN_FILE", DEFAULT_TOKEN_FILE))
+    ap.add_argument("--token", default=os.environ.get("AGENT_BOARD_TOKEN"), help="토큰을 직접 준다(파일보다 우선)")
+    ap.add_argument("--web-dist", default=os.path.join(HERE, "web", "dist"), help="React 빌드 결과 폴더")
     args = ap.parse_args()
     if args.refresh < 1:
         ap.error("--refresh 는 1 이상이어야 한다")
     if not is_loopback(args.host) and not args.allow_remote:
-        ap.error("--host %s 는 루프백이 아니다. 인증이 없어 작업 내용이 보이므로 --allow-remote 를 함께 줘야 한다" % args.host)
+        ap.error("--host %s 는 루프백이 아니다. 화면에 작업 내용이 보이므로 --allow-remote 를 함께 줘야 한다" % args.host)
     args.hide_re = re.compile(args.hide_pattern) if args.hide_pattern else None
-    for k in ("wiki", "runs", "sessions"):
+    for k in ("wiki", "runs", "sessions", "claude", "token_file", "web_dist"):
         setattr(args, k, os.path.abspath(os.path.expanduser(getattr(args, k))))
     args.machines = parse_machines(args.machines)
+    token = load_token(args.token_file, args.token)
 
     state = State(args)
     state.start()
-    srv = ThreadingHTTPServer((args.host, args.port), make_handler(state))
-    print("에이전트 팀 보드: http://%s:%d  (위키 %s · 실행 기록 %s · 세션 기록 %s · 이 맥 %s · 원격 %s)" % (
-        args.host, args.port, args.wiki, args.runs, args.sessions, args.local_label,
+    srv = ThreadingHTTPServer((args.host, args.port), make_handler(state, token, args.web_dist))
+    srv.daemon_threads = True
+    print("에이전트 팀 보드: http://%s:%d/?t=%s" % (args.host, srv.server_address[1], token), flush=True)
+    print("  토큰 파일 %s · 화면 %s%s · 이 맥 %s · 원격 %s" % (
+        args.token_file, args.web_dist, "" if os.path.isdir(args.web_dist) else " (빌드 없음)", args.local_label,
         ", ".join("%s(%s)" % (l, n) for n, l in args.machines) or "없음"), flush=True)
     try:
         srv.serve_forever()

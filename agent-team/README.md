@@ -5,7 +5,7 @@ Claude Code 세션이 총괄하고, Codex 매니저 스레드 하나가 Codex �
 ```
 Claude Code(총괄) ──요청·검수·기록──▶ Codex 매니저 ──spawn_agent/wait_agent──▶ explorer · worker · reviewer
                                             │
-   보드(board.py, 로컬 웹) ◀── runs/*.meta.json · ~/.codex/sessions rollout · herdr · app-server thread/list · wiki raw
+   보드(board.py + web/) ◀── Codex rollout · Claude Code transcript · runs/*.meta.json · herdr · wiki raw  (SSE + 토큰)
 ```
 
 ## 들어 있는 것
@@ -15,7 +15,9 @@ Claude Code(총괄) ──요청·검수·기록──▶ Codex 매니저 ──
 | `agents/*.toml` | Codex 하위 에이전트 역할 3개. `~/.codex/agents/` 에 등록한다 |
 | `run_team.py` | 과제 하나를 `codex exec --json` 으로 팀(team) 또는 단일(single) 모드로 돌리고 `runs/` 에 기록 |
 | `board.py` | 로컬 웹 보드. 팀 실행(매니저·하위 에이전트 트리·토큰·보고) · 그 밖의 Codex 스레드 · 위키 작업 기록 · herdr 세션 |
-| `test_agent_team.py` | 회귀 시험 (`python3 -m unittest agent-team/test_agent_team.py`) |
+| `office.py` | 사무실 데이터 — Codex 세션 기록·Claude Code 대화 기록을 같은 이벤트로 읽어 캐릭터 상태(작업·읽기·생각·팀 대기·입력 대기·승인 대기·멈춤 의심·끝)를 만든다 |
+| `web/` | 화면 — React·Vite·TypeScript, 픽셀 사무실(캔버스)과 실행·기록 탭. 구조와 규칙은 `web/README.md` |
+| `test_agent_team.py` · `test_office.py` | 회귀 시험 (`python3 -m unittest agent-team/test_agent_team.py agent-team/test_office.py`) |
 
 ## 쓰는 법
 
@@ -24,7 +26,10 @@ Claude Code(총괄) ──요청·검수·기록──▶ Codex 매니저 ──
 [ -e ~/.codex/agents ] || ln -s "$(pwd)/agent-team/agents" ~/.codex/agents
 [ -L ~/.codex/agents ] || for f in agent-team/agents/*.toml; do [ -e ~/.codex/agents/$(basename $f) ] || ln -s "$(pwd)/$f" ~/.codex/agents/; done
 
-# 보드 (기본 http://127.0.0.1:8765, 3초마다 갱신)
+# 화면 빌드 (한 번, 화면을 고친 뒤에도)
+(cd agent-team/web && npm ci && npm run build)
+
+# 보드 — 찍힌 주소(http://127.0.0.1:8765/?t=<토큰>)로 연다. 토큰은 ~/.omj/agent-team/board.token(0600)
 # --machines 는 'herdr 머신 이름=화면 이름' 을 쉼표로. --local-label 은 이 맥의 화면 이름
 python3 agent-team/board.py --local-label "<이 맥 화면 이름>" --machines "<herdr 원격 머신 이름>=<화면 이름>"
 
@@ -44,7 +49,9 @@ python3 agent-team/run_team.py --name review-x --cwd <폴더> --mode team --task
 - `exec` 이벤트는 0.163 에서 확인한 이름만 안다: `thread.started` · `turn.started` · `turn.completed` · `turn.failed` · `item.*` · `error`. 모르는 이름은 보드에 「모르는 이벤트」로 띄운다.
 - 「그 밖의 Codex 스레드」는 `codex app-server`(stdio)를 따로 띄워 `thread/list` 로 읽는다. `sourceKinds` 를 비우면 대화형만 오므로 10가지를 모두 적는다. 보드는 파일을 쓰지 않지만, 띄운 app-server 는 Codex 상태 DB 를 스스로 갱신할 수 있다.
 - 돌고 있는 app-server 데몬에 직접 붙는 길(`codex app-server proxy`·control socket)은 핸드셰이크가 달라 아직 안 된다.
-- 보드는 127.0.0.1 에만 묶는다. 다른 주소는 `--allow-remote` 를 함께 줘야 하고, 인증이 없으니 작업 내용이 그대로 보인다.
+- 사무실은 최근 `--office-min`(기본 60)분 안에 움직인 세션만 앉힌다. 일하는 중인데 `--stall-sec`(기본 600)초 소식이 없으면 「멈춤 의심」, herdr 가 승인·질문 화면이라고 알리면 「승인 기다림」이다.
+- 대화 내용은 화면에 싣지 않는다. 도구 이름·파일 이름·명령 첫 단어·Bash 설명만 쓴다. Codex 하위 에이전트의 보고문만 예외다.
+- 데이터 길(`/api/state`·SSE `/events`)은 토큰이 있어야 열린다. 보드는 127.0.0.1 에만 묶고, 다른 주소는 `--allow-remote` 를 함께 줘야 한다.
 
 ## 원칙 (OpenAI DevDay Seoul 2026 「What Comes After Loops?」에서)
 

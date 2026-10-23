@@ -1,0 +1,29 @@
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.busy {
+  color: var(--tone-busy);
+}
+
+.calm {
+  color: var(--muted);
+}
+
+.attention {
+  color: var(--tone-attention);
+}
+
+.good {
+  color: var(--tone-good);
+}
+
+.bad {
+  color: var(--tone-bad);
+}

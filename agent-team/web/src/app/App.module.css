@@ -1,0 +1,14 @@
+.missing {
+  max-width: 640px;
+  padding: 32px 16px;
+}
+
+.missing h1 {
+  font-size: 18px;
+}
+
+.missing code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--card);
+}

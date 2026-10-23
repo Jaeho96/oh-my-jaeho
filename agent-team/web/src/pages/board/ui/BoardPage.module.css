@@ -1,0 +1,115 @@
+.page {
+  min-height: 100vh;
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tabs button {
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tabs button[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+  list-style: none;
+}
+
+.meta {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.alert,
+.notice {
+  margin: 0;
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+.alert {
+  background: color-mix(in srgb, var(--tone-bad) 12%, transparent);
+  color: var(--tone-bad);
+}
+
+.notice {
+  background: color-mix(in srgb, var(--tone-attention) 12%, transparent);
+}
+
+.main {
+  padding: 12px 16px;
+}
+
+.loading {
+  color: var(--muted);
+}
+
+.office {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 12px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .office {
+    grid-template-columns: 1fr;
+  }
+}
+
+.floor {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+}
+
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+}
+
+.sideHeading {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}

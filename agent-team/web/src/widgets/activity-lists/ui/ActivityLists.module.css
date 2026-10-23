@@ -1,0 +1,106 @@
+.grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+}
+
+.heading {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  padding: 8px;
+  border-radius: 8px;
+}
+
+.item:hover {
+  background: var(--bg);
+}
+
+.line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.name {
+  overflow-wrap: anywhere;
+}
+
+.meta,
+.nums,
+.task {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.nums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px;
+}
+
+.task {
+  margin: 4px 0 0;
+}
+
+.state {
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.done,
+.completed {
+  color: var(--tone-good);
+}
+
+.running,
+.progress,
+.started {
+  color: var(--tone-busy);
+}
+
+.error,
+.blocked {
+  color: var(--tone-bad);
+}
+
+p.error {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+.empty {
+  color: var(--muted);
+  font-size: 13px;
+}

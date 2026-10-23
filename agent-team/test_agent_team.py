@@ -167,6 +167,48 @@ class BoardTests(Base):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("--allow-remote", p.stderr)
 
+    def test_server_token_sse_and_static_guard(self):
+        import socket
+        import urllib.request
+        import urllib.error
+        dist = self.dir / "dist"
+        dist.mkdir()
+        (dist / "index.html").write_text("<!doctype html><title>보드</title>")
+        (self.dir / "secret.txt").write_text("비밀")
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        env = dict(self.env, HOME=str(self.dir))
+        p = subprocess.Popen([sys.executable, str(HERE / "board.py"), "--port", str(port), "--token", "tok",
+                              "--web-dist", str(dist), "--sessions", str(self.dir / "s"), "--claude", str(self.dir / "c"),
+                              "--runs", str(self.runs), "--wiki", str(self.dir / "w")],
+                             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(p.kill)
+        base = "http://127.0.0.1:%d" % port
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(base + "/", timeout=1).read()
+                break
+            except OSError:
+                time.sleep(0.1)
+
+        def code(path):
+            try:
+                return urllib.request.urlopen(base + path, timeout=3).getcode()
+            except urllib.error.HTTPError as e:
+                return e.code
+
+        self.assertEqual(code("/api/state"), 401)                             # 토큰 없으면 막힌다
+        self.assertEqual(code("/api/state?t=wrong"), 401)
+        self.assertEqual(code("/api/state?t=tok"), 200)
+        self.assertEqual(code("/../secret.txt"), 404)                         # 빌드 폴더 밖은 못 나간다
+        self.assertEqual(code("/%2e%2e/secret.txt"), 404)
+        self.assertIn("보드", urllib.request.urlopen(base + "/", timeout=3).read().decode())
+        with urllib.request.urlopen(base + "/events?t=tok", timeout=5) as r:
+            self.assertEqual(r.headers.get("Content-Type"), "text/event-stream; charset=utf-8")
+            first = r.readline().decode()
+        self.assertEqual(first.strip(), "event: state")                      # 연결하자마자 상태 한 번
+
     def test_parse_machines(self):
         self.assertEqual(board.parse_machines("work mac=유휴 맥북, other"), [("work mac", "유휴 맥북"), ("other", "other")])
 
