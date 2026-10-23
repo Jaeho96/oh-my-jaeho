@@ -1,4 +1,5 @@
 """wiki_log_guard.py 회귀 시험 — 가짜 대화 기록으로 Claude Code·Codex 둘 다 본다."""
+import datetime
 import json
 import os
 import subprocess
@@ -81,6 +82,37 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(self.run_hook([patch], codex=True, session="c1").get("decision"), "block")
         log = codex_line("exec", 'tools.apply_patch("*** Add File: %s/y.md")' % RAW)
         self.assertEqual(self.run_hook([patch, log], codex=True, session="c2"), {})
+
+    def write_raw(self, minutes_ahead, saved_hours_ago=0):
+        raw = self.dir / "Documents/Obsidian Vault/LLM Wiki/raw"
+        raw.mkdir(parents=True, exist_ok=True)
+        saved = datetime.datetime.now() - datetime.timedelta(hours=saved_hours_ago)
+        stamp = saved + datetime.timedelta(minutes=minutes_ahead)
+        path = raw / ("%s-claude-code-t-abcd.md" % stamp.strftime("%Y%m%dT%H%M%S"))
+        path.write_text("---\n---\n", encoding="utf-8")
+        os.utime(path, (saved.timestamp(), saved.timestamp()))
+        return claude_line("tool", name="Write", input={"file_path": str(path)})
+
+    def test_old_misnamed_log_is_left_alone(self):
+        # 이미 올라가 링크가 걸렸을 옛 기록은 이름을 바꾸라고 하지 않는다
+        self.assertEqual(self.run_hook(self.edits() + [self.write_raw(30, saved_hours_ago=24)]), {})
+
+    def test_only_logs_after_last_check(self):
+        old = self.edits() + [self.write_raw(30)]
+        self.assertEqual(self.run_hook(old, session="k1").get("decision"), "block")
+        later = old + [claude_line("tool", name="Write", input={"file_path": os.path.expanduser(RAW) + "/x.md"})]
+        self.assertEqual(self.run_hook(later, session="k1"), {})              # 앞서 본 기록은 다시 보지 않는다
+
+    def test_name_ahead_of_save_blocks_once(self):
+        rows = self.edits() + [self.write_raw(30)]
+        out = self.run_hook(rows)
+        self.assertEqual(out.get("decision"), "block")
+        self.assertIn("파일명 시각", out["reason"])
+        self.assertNotIn("기록이 아직 없다", out["reason"])                     # 기록은 남겼다
+        self.assertEqual(self.run_hook(rows), {})                               # 같은 파일은 다시 묻지 않는다
+
+    def test_name_at_save_time_passes(self):
+        self.assertEqual(self.run_hook(self.edits() + [self.write_raw(-1)]), {})
 
     def test_broken_input_passes(self):
         p = subprocess.run([sys.executable, str(HERE / "wiki_log_guard.py")], env=self.env, capture_output=True, text=True,

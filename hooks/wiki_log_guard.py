@@ -5,12 +5,16 @@
 - 같은 작업 묶음에는 한 번만 묻는다 — 세션마다 어디까지 물었는지 적어 둔다.
 - 예약 작업 세션(첫 지시가 <scheduled-task)과 이미 한 번 되돌린 턴(stop_hook_active)은 통과시킨다.
 - 기록할 만한 일이 아니었으면 모델이 이유를 한 줄 말하고 끝낼 수 있다.
+- 이 세션이 쓴 기록의 파일명 시각이 저장한 시각보다 늦으면 되돌려 보낸다 — 시각을 짐작해 쓴 것이다.
+  2026-10-23 점검에서 Claude Code 기록 108건 중 33건이 실제보다 최대 34분 늦은 이름이었다.
+  지난번 확인 뒤에 쓴 기록 중 MAX_AGE 안에 저장된 것만 본다. 이미 올라가 링크가 걸린 옛 기록의 이름을 바꾸게 하면 안 된다.
 - 오류가 나면 언제나 통과시킨다. 훅 고장이 작업 종료를 막으면 안 된다.
 
 환경 변수: WIKI_RAW_DIR(기본 ~/Documents/Obsidian Vault/LLM Wiki/raw) · WIKI_GUARD_MIN_CALLS(기본 8)
-          · WIKI_GUARD_STATE(기본 ~/.omj/wiki-guard.json)
+          · WIKI_GUARD_STATE(기본 ~/.omj/wiki-guard.json) · WIKI_GUARD_AHEAD_SEC(기본 120) · WIKI_GUARD_MAX_AGE_SEC(기본 1800)
 Python 3.9 에서도 돈다(데스크톱 앱이 시스템 python3 로 훅을 부를 수 있다).
 """
+import datetime
 import json
 import os
 import re
@@ -20,6 +24,9 @@ RAW_DIR = os.path.expanduser(os.environ.get("WIKI_RAW_DIR", "~/Documents/Obsidia
 RAW_MARK = os.path.basename(os.path.dirname(RAW_DIR.rstrip("/"))) + "/" + os.path.basename(RAW_DIR.rstrip("/")) + "/"
 MIN_CALLS = int(os.environ.get("WIKI_GUARD_MIN_CALLS", "8"))
 STATE = os.path.expanduser(os.environ.get("WIKI_GUARD_STATE", "~/.omj/wiki-guard.json"))
+AHEAD_SEC = int(os.environ.get("WIKI_GUARD_AHEAD_SEC", "120"))
+MAX_AGE = int(os.environ.get("WIKI_GUARD_MAX_AGE_SEC", "1800"))
+RAW_NAME = re.compile(re.escape(RAW_MARK) + r"(\d{8}T\d{6}-[^/\"'\s\\]+?\.md)")
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 MCP_WRITE = re.compile(r"(create|update|save|delete|send|publish|execute|move|upload|archive|trash|share|write|patch)", re.I)
 SHELL_WRITE = re.compile(r"(>|\btee\b|\*\*\* (Add|Update) File|writeFile|write_text|\bcp\b|\bmv\b)")
@@ -89,6 +96,27 @@ def decide(events, start):
     return (edits >= 1 or len(calls) >= MIN_CALLS), len(calls), edits
 
 
+def ahead_names(events, lines, after):
+    """after 줄 뒤에 이 세션이 쓴 raw 기록 중 파일명 시각이 저장 시각(mtime)보다 늦은 것."""
+    names = set()
+    for n, kind, _ in events:
+        if kind == "raw" and n > after:
+            names.update(RAW_NAME.findall(lines[n]))
+    now = datetime.datetime.now()
+    bad = []
+    for name in sorted(names):
+        path = os.path.join(RAW_DIR, name)
+        if not os.path.isfile(path):          # 이미 이름을 고쳤다
+            continue
+        stamp = datetime.datetime.strptime(name[:15], "%Y%m%dT%H%M%S")
+        written = datetime.datetime.fromtimestamp(os.path.getmtime(path))
+        if (now - written).total_seconds() > MAX_AGE:   # 옛 기록 — 이미 올라가 링크가 걸렸다
+            continue
+        if (stamp - written).total_seconds() > AHEAD_SEC:
+            bad.append(name)
+    return bad
+
+
 def load_state():
     try:
         with open(STATE, encoding="utf-8") as f:
@@ -117,6 +145,14 @@ def reason(calls, edits):
     )
 
 
+def ahead_reason(names):
+    return (
+        "공유 LLM Wiki 기록의 파일명 시각이 실제로 저장한 시각보다 늦다: %s. "
+        "시각을 짐작하지 말고 `date +%%Y%%m%%dT%%H%%M%%S` 로 받아, 이 세션이 방금 쓴 그 기록의 파일명과 created_at 을 "
+        "실제 시각으로 고쳐라(mv 로 이름만 바꾼다. 다른 도구·세션의 기록은 건드리지 않는다)." % ", ".join(names)
+    )
+
+
 def main():
     data = json.loads(sys.stdin.read() or "{}")
     if data.get("stop_hook_active"):
@@ -129,12 +165,23 @@ def main():
     codex = any('"type":"session_meta"' in l.replace(" ", "") for l in lines[:3])
     key = data.get("session_id") or path
     state = load_state()
-    block, calls, edits = decide((codex_events if codex else claude_events)(lines), state.get(key, -1))
-    if not block:
-        return {}
-    state[key] = len(lines) - 1
+    events = list((codex_events if codex else claude_events)(lines))
+    block, calls, edits = decide(events, state.get(key, -1))
+    after = state.get(key + "#ahead", -1)
+    if not isinstance(after, int):                    # 첫 판이 남긴 목록 — 지금부터 본다
+        after = len(lines) - 1
+    ahead = ahead_names(events, lines, after)
+    state[key + "#ahead"] = len(lines) - 1            # 다음에는 이 뒤에 쓴 기록만 본다
+    reasons = []
+    if block:
+        state[key] = len(lines) - 1
+        reasons.append(reason(calls, edits))
+    if ahead:
+        reasons.append(ahead_reason(ahead))
     save_state(state)
-    return {"decision": "block", "reason": reason(calls, edits)}
+    if not reasons:
+        return {}
+    return {"decision": "block", "reason": " / ".join(reasons)}
 
 
 if __name__ == "__main__":

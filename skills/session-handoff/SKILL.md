@@ -30,13 +30,14 @@ herdr --machine "<저장된 머신 이름>" agent list     # 원격 맥 (herdr m
 
 ### 2. 요청서 쓰기
 
-공유 위키 `raw/`에 쓴다(위치·규칙은 전역 지침의 공유 위키 블록과 위키 안 `PROTOCOL.md`, 기본 위치 `~/Documents/Obsidian Vault/LLM Wiki`). 파일명: `YYYYMMDDTHHMMSS-<보내는 도구>-handoff-<주제>-<고유값>.md`
+공유 위키 `raw/`에 쓴다(위치·규칙은 전역 지침의 공유 위키 블록과 위키 안 `PROTOCOL.md`, 기본 위치 `~/Documents/Obsidian Vault/LLM Wiki`). 파일명: `YYYYMMDDTHHMMSS-<보내는 도구>-handoff-<주제>-<고유값>.md`. 시각은 짐작하지 말고 `date +%Y%m%dT%H%M%S`로 받는다 — 짐작한 시각이 받는 쪽 완료 기록보다 늦으면 끝난 일이 진행 중으로 정렬된다.
 
 ```markdown
 ---
 title: "요청: <한 줄>"
 task_id: "<고유 id>"
 author: "<보내는 도구>"
+machine: "<보내는 머신: jaeho-macbook | 276-macbook>"
 to: "<대상 세션 / 머신>"
 status: "started"
 created_at: "<ISO 시각>"

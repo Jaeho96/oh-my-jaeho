@@ -60,7 +60,7 @@ python3 tools/wiki_setup.py --repo <비공개 위키 저장소> --blocks --apply
 python3 tools/wiki_hooks.py --apply                                  # Claude settings.json · Codex hooks.json 에 훅 등록
 ```
 
-- `hooks/wiki_log_guard.py` — Stop 훅. 파일을 고쳤거나 도구를 여러 번 썼는데 위키 기록이 없으면 끝내지 말고 기록하라고 한 번 되돌려 보낸다. 예약 작업 세션·재진입·오류는 통과.
+- `hooks/wiki_log_guard.py` — Stop 훅. 파일을 고쳤거나 도구를 여러 번 썼는데 위키 기록이 없으면 끝내지 말고 기록하라고 한 번 되돌려 보낸다. 이 세션이 쓴 기록의 파일명 시각이 저장 시각보다 늦어도(시각을 짐작한 것) 한 번 되돌려 보낸다. 예약 작업 세션·재진입·오류는 통과.
 - `tools/wiki_sync.py --detach` — 세션 시작에 받고 작업 끝에 커밋·올린다. 충돌이면 멈추고 위키 폴더 `.sync-error` 에 남긴다.
 - launchd·cron 은 쓰지 않는다. macOS 개인정보 보호가 백그라운드 작업의 `~/Documents` 접근을 막는다. 훅은 터미널 권한을 물려받는다.
 - Codex 는 새 훅을 처음 볼 때 신뢰(Trust) 승인을 한 번 묻는다.
