@@ -2,14 +2,15 @@
   display: inline-block;
   padding: 1px 8px;
   border: 1px solid currentColor;
-  border-radius: 999px;
-  font-size: 11px;
+  border-radius: 4px;
+  font-size: 12px;
   line-height: 18px;
   white-space: nowrap;
 }
 
 .busy {
   color: var(--tone-busy);
+  background: var(--busy-bg);
 }
 
 .calm {
@@ -18,12 +19,15 @@
 
 .attention {
   color: var(--tone-attention);
+  background: var(--attention-bg);
 }
 
 .good {
   color: var(--tone-good);
+  background: var(--good-bg);
 }
 
 .bad {
   color: var(--tone-bad);
+  background: var(--bad-bg);
 }

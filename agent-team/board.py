@@ -454,7 +454,12 @@ def collect_runs(runs_dir, rollouts, limit=20):
             r["name"] = name
             r["meta"] = {k: meta.get(k) for k in ("mode", "model", "effort", "cwd", "write", "task", "started",
                                                   "finished", "exit_code", "error", "timed_out", "pid")}
-            r["final"] = (read_text(base + ".last.md") or r.get("final") or "")[:4000]
+            last_text = read_text(base + ".last.md") or ""
+            first_line = next((line.strip() for line in last_text.splitlines() if line.strip()), "")
+            first_line = re.sub(r"^\s*(?:[#>*+\-]+|\d+[.)])\s*", "", first_line)
+            first_line = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", first_line)
+            r["resultHead"] = re.sub(r"[*_`~]", "", first_line).strip()[:200]
+            r["final"] = (last_text or r.get("final") or "")[:4000]
             r["state"] = run_state(meta, r)
             r["elapsed_sec"] = elapsed(meta.get("started"), meta.get("finished") or (r.get("updated") if r["state"] != "running" else None))
             team = None

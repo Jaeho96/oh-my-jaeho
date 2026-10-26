@@ -23,7 +23,7 @@ const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFi
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
 export const isAgentStatus = (v: unknown): v is AgentStatus =>
-  typeof v === 'string' && (AGENT_STATUSES as readonly string[]).includes(v);
+  typeof v === 'string' && AGENT_STATUSES.some((status) => status === v);
 
 function parseContext(v: unknown): ContextUsage | null {
   if (!isObject(v)) return null;
@@ -50,6 +50,8 @@ export function parseAgent(v: unknown, unknownStatuses: Set<string>): Agent | nu
     model: str(v.model),
     effort: str(v.effort),
     status,
+    statusChangedAt: typeof v.statusChangedAt === 'string' && Number.isFinite(Date.parse(v.statusChangedAt)) ? v.statusChangedAt : null,
+    unknownStatus: isAgentStatus(v.status) ? null : str(v.status),
     activity: str(v.activity),
     context: parseContext(v.context),
     tokens,
@@ -107,6 +109,7 @@ function parseRun(v: unknown): Run | null {
   const tt = isObject(v.team_tokens) ? v.team_tokens : {};
   return {
     name: v.name,
+    resultHead: str(v.resultHead)?.trim().slice(0, 200) || null,
     state: str(v.state) ?? 'unknown',
     elapsedSec: num(v.elapsed_sec),
     members: num(v.members) ?? 0,

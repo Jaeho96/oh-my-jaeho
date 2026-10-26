@@ -40,3 +40,10 @@ describe('parseSnapshot', () => {
     expect(result.ok && result.snapshot.runs).toEqual([]);
   });
 });
+
+it('잘못된 대기 시각은 버리고 공백 결과 요약은 없는 값으로 처리한다',()=>{
+ const result=parseSnapshot(JSON.stringify({office:{rooms:[{id:'r',teams:[{id:'t',lead:{id:'a',status:'waiting',statusChangedAt:'invalid'}}]}]},runs:[{name:'r',resultHead:'  '}]}));
+ if(!result.ok)throw new Error('fixture');
+ expect(result.snapshot.office?.rooms[0]?.teams[0]?.lead.statusChangedAt).toBeNull();
+ expect(result.snapshot.runs[0]?.resultHead).toBeNull();
+});

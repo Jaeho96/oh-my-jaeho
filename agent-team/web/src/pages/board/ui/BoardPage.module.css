@@ -1,115 +1,155 @@
 .page {
-  min-height: 100vh;
+  max-width:1600px;
+  margin:auto;
+  padding:0 24px 24px
 }
-
 .header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 16px;
-  align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--line);
+  padding:24px 0 0;
+  margin-bottom:16px;
+  border-bottom:1px solid var(--line)
 }
-
-.title {
-  margin: 0;
-  font-size: 16px;
+.headline {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px
 }
-
+.headline h1 {
+  font-size:20px;
+  line-height:28px;
+  margin:0
+}
+.headline span {
+  font-size:13px;
+  color:var(--muted)
+}
 .tabs {
-  display: flex;
-  gap: 4px;
+  display:flex;
+  gap:16px;
+  margin-top:12px
 }
-
 .tabs button {
-  padding: 4px 12px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: none;
-  color: inherit;
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
+  border:0;
+  border-bottom:2px solid transparent;
+  border-radius:0;
+  background:none;
+  height:44px
 }
-
-.tabs button[aria-pressed='true'] {
-  border-color: var(--accent);
-  color: var(--accent);
+.tabs button[aria-selected=true] {
+  border-bottom-color:var(--accent);
+  color:var(--accent)
 }
-
-.summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 12px;
-  margin: 0;
-  padding: 0;
-  font-size: 12px;
-  list-style: none;
-}
-
-.meta {
-  margin-left: auto;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.alert,
-.notice {
-  margin: 0;
-  padding: 8px 16px;
-  font-size: 13px;
-}
-
-.alert {
-  background: color-mix(in srgb, var(--tone-bad) 12%, transparent);
-  color: var(--tone-bad);
-}
-
-.notice {
-  background: color-mix(in srgb, var(--tone-attention) 12%, transparent);
-}
-
-.main {
-  padding: 12px 16px;
-}
-
-.loading {
-  color: var(--muted);
-}
-
 .office {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 12px;
-  align-items: start;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) clamp(360px,24vw,400px);
+  gap:24px;
+  align-items:start
 }
-
-@media (max-width: 900px) {
-  .office {
-    grid-template-columns: 1fr;
+.floor,.side {
+  min-width:0;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:var(--card)
+}
+.floor>summary {
+  display:none
+}
+.viewport {
+  height:clamp(360px,calc(100dvh - 280px),680px)
+}
+.side {
+  padding:16px;
+  max-height:680px;
+  overflow:auto
+}
+.side h2 {
+  font-size:16px
+}
+.alert {
+  padding:12px;
+  background:var(--bad-bg);
+  color:var(--tone-bad);
+  border:1px solid var(--tone-bad);
+  border-radius:6px
+}
+.loading {
+  height:480px;
+  padding:24px;
+  background:var(--surface-subtle);
+  border-radius:8px
+}
+.dialog {
+  border:1px solid var(--line);
+  border-radius:8px;
+  padding:16px;
+  width:calc(100% - 32px);
+  max-width:600px;
+  color:var(--fg);
+  background:var(--card)
+}
+.dialog::backdrop {
+  background:#10151d99
+}
+.dialog:not([open]) {
+  display:none
+}
+@media(min-width:768px) {
+  .dialog[open] {
+    display:none
   }
 }
-
-.floor {
-  min-width: 0;
-  padding: 8px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--card);
+@media(max-width:1279px) {
+  .page {
+    padding:0 16px 16px
+  }
+  .office {
+    grid-template-columns:minmax(0,1fr) 320px;
+    gap:16px
+  }
 }
-
-.side {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--card);
+@media(max-width:1023px) {
+  .office {
+    display:flex;
+    flex-direction:column
+  }
+  .side {
+    order:0;
+    width:100%;
+    max-height:none
+  }
+  .floor {
+    order:1;
+    width:100%
+  }
+  .floor>summary {
+    display:block;
+    padding:12px
+  }
+  .viewport {
+    height:360px
+  }
 }
-
-.sideHeading {
-  margin: 6px 0 0;
-  color: var(--muted);
-  font-size: 12px;
+@media(max-width:767px) {
+  .header {
+    padding-top:16px
+  }
+  .headline {
+    align-items:start
+  }
+  .headline span {
+    max-width:100px;
+    text-align:right
+  }
+  .desktopDetail {
+    display:none
+  }
+  .viewport {
+    height:300px
+  }
+  .floor:not(:focus-within) .viewport {
+    height:280px
+  }
+  .page {
+    overflow-wrap:anywhere
+  }
 }

@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { receiveSnapshot } from '../../../entities/board';
@@ -24,6 +24,8 @@ describe('AgentDetail', () => {
     expect(panel).toHaveTextContent('Huygens · explorer');
     expect(panel).toHaveTextContent('읽는 중');
     expect(panel).toHaveTextContent('47.5k (10%)');
+    expect(within(panel).getAllByRole('term').map((term) => term.textContent)).toEqual(['하는 일', '마지막 소식', '컨텍스트', '모델', '토큰 합계', '폴더']);
+    expect(panel.firstElementChild).toBe(within(panel).getByRole('button', { name: '목록으로' }));
   });
 
   it('고른 에이전트가 사무실에서 사라지면 없다고 말한다', () => {

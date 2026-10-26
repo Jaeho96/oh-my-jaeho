@@ -10,7 +10,7 @@ import { nextDelayMs } from '../lib';
 export type StreamStatus =
   | { kind: 'connecting' }
   | { kind: 'open' }
-  | { kind: 'reconnecting'; attempt: number }
+  | { kind: 'reconnecting'; attempt: number; message?: string }
   | { kind: 'unauthorized' }
   | { kind: 'failed'; message: string };
 
@@ -45,8 +45,8 @@ const defaultDeps: StreamDeps = {
     const res = await fetch(url, { cache: 'no-store' });
     return { status: res.status, text: await res.text() };
   },
-  setTimer: (fn, ms) => setTimeout(fn, ms),
-  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  setTimer: (fn, ms) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); },
+  clearTimer: (handle) => { if (typeof handle === 'function') handle(); },
 };
 
 export function openEventStream(options: StreamOptions): () => void {
@@ -55,10 +55,11 @@ export function openEventStream(options: StreamOptions): () => void {
   let timer: unknown = null;
   let attempt = 0;
   let stopped = false;
+  let lastError: string | undefined;
 
   const scheduleReopen = () => {
     if (stopped) return;
-    options.onStatus({ kind: 'reconnecting', attempt });
+    options.onStatus({ kind: 'reconnecting', attempt, message: lastError });
     timer = deps.setTimer(() => {
       timer = null;
       void start();
@@ -71,6 +72,7 @@ export function openEventStream(options: StreamOptions): () => void {
     source = es;
     es.addEventListener('open', () => {
       attempt = 0;
+      lastError = undefined;
       options.onStatus({ kind: 'open' });
     });
     es.addEventListener('error', () => {
@@ -80,7 +82,7 @@ export function openEventStream(options: StreamOptions): () => void {
         source = null;
         scheduleReopen();
       } else {
-        options.onStatus({ kind: 'reconnecting', attempt });
+        options.onStatus({ kind: 'reconnecting', attempt, message: lastError });
       }
     });
     es.addEventListener(options.eventName, (ev: MessageEvent<string>) => options.onMessage(ev.data));
@@ -98,7 +100,8 @@ export function openEventStream(options: StreamOptions): () => void {
       options.onMessage(res.text);
     } catch (error) {
       if (stopped) return;
-      options.onStatus({ kind: 'failed', message: error instanceof Error ? error.message : String(error) });
+      lastError = error instanceof Error ? error.message : String(error);
+      options.onStatus({ kind: 'failed', message: lastError });
       scheduleReopen();
       return;
     }

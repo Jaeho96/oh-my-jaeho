@@ -36,6 +36,8 @@ export interface Agent {
   model: string | null;
   effort: string | null;
   status: AgentStatus;
+  statusChangedAt?: string | null;
+  unknownStatus?: string | null;
   activity: string | null;
   context: ContextUsage | null;
   tokens: { total: number | null; output: number | null } | null;
@@ -81,6 +83,7 @@ export interface RunMeta {
 export interface Run {
   name: string;
   state: string;
+  resultHead?: string | null;
   elapsedSec: number | null;
   members: number;
   teamTokens: { total: number | null; output: number | null };

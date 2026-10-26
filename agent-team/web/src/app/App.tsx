@@ -6,12 +6,19 @@ import type { ConnectionConfig } from './config';
 import styles from './App.module.css';
 
 export function App({ config }: { config: ConnectionConfig }) {
+  const fixture = import.meta.env.DEV && new URLSearchParams(window.location.search).get('fixture') === 'busy';
   useEffect(() => {
+    if (fixture) {
+      let stopped = false;
+      let cleanup: (() => void) | undefined;
+      void import('./fixture').then((module) => { if (!stopped) cleanup = module.loadBusyFixture(); });
+      return () => { stopped = true; cleanup?.(); };
+    }
     if (!config.ok) return undefined;
     return connectBoard({ token: config.token });
-  }, [config]);
+  }, [config, fixture]);
 
-  if (!config.ok) {
+  if (!config.ok && !fixture) {
     return (
       <main className={styles.missing}>
         <h1>토큰이 필요합니다</h1>

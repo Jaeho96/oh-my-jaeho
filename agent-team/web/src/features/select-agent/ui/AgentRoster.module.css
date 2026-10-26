@@ -1,58 +1,55 @@
+.room {
+  margin-bottom:24px
+}
+.room h3 {
+  font-size:14px;
+  margin-bottom:8px
+}
+.room small,.team small {
+  font-size:12px;
+  font-weight:400;
+  color:var(--muted)
+}
+.team {
+  border-top:1px solid var(--line)
+}
+.team summary {
+  padding:12px 0;
+  font-size:13px
+}
 .list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  list-style:none;
+  margin:0;
+  padding:0
 }
-
 .item {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 2px 8px;
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
+  border:1px solid transparent;
+  width:100%;
+  text-align:left;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  gap:4px 8px;
+  padding:12px;
+  min-height:72px;
+  background:transparent
 }
-
-.item:hover {
-  background: var(--bg);
+.item[aria-pressed=true] {
+  border-color:var(--accent);
+  background:var(--selected-bg)
 }
-
-.item[aria-pressed='true'] {
-  border-color: var(--accent);
-  background: var(--bg);
-}
-
-.item:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 .name {
-  overflow: hidden;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight:600;
+  overflow-wrap:anywhere;
+  display:-webkit-box;
+  -webkit-line-clamp:2;
+  -webkit-box-orient:vertical;
+  overflow:hidden
 }
-
 .activity {
-  grid-column: 2;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  grid-column:1/-1;
+  color:var(--muted);
+  font-size:13px
 }
-
 .empty {
-  color: var(--muted);
-  font-size: 13px;
+  color:var(--muted)
 }

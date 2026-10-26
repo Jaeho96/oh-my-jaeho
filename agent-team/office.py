@@ -289,6 +289,8 @@ class AgentTrack:
         self.last_message = None
         self.first_ts = None
         self.last_ts = None
+        self.status_changed_at = None
+        self.last_status = None
         self.blocked = False           # herdr 가 승인·질문 화면이라고 알려 주면 켠다
 
     def apply(self, events, ts):
@@ -337,6 +339,11 @@ class AgentTrack:
                 self.tokens_total = data.get("total")
                 self.tokens_output = data.get("output")
 
+        event_status, _ = self.status(ts or self.last_ts or 0, float("inf"))
+        if event_status != self.last_status:
+            self.last_status = event_status
+            self.status_changed_at = ts or self.last_ts
+
     def status(self, now, stall_sec):
         if self.blocked:
             return PERMISSION, "승인·질문 대기"
@@ -359,6 +366,9 @@ class AgentTrack:
 
     def snapshot(self, now, stall_sec):
         st, activity = self.status(now, stall_sec)
+        if st != self.last_status:
+            self.status_changed_at = (self.last_ts + stall_sec) if st == STALLED and self.last_ts else now
+            self.last_status = st
         window = self.context_window
         if self.provider == "claude" and self.context_used:
             window = CLAUDE_WIDE_WINDOW if self.context_used > CLAUDE_WINDOW else CLAUDE_WINDOW
@@ -369,7 +379,7 @@ class AgentTrack:
         return {
             "id": self.id, "provider": self.provider, "kind": self.kind, "parent": self.parent, "machine": self.machine,
             "role": self.role, "nickname": self.nickname, "title": self.title, "cwd": short_path(self.cwd),
-            "model": self.model, "effort": self.effort, "status": st, "activity": activity,
+            "model": self.model, "effort": self.effort, "status": st, "statusChangedAt": iso(self.status_changed_at), "activity": activity,
             "context": ctx, "tokens": {"total": self.tokens_total, "output": self.tokens_output} if self.tokens_total else None,
             "lastMessage": self.last_message if self.provider == "codex" else None,
             "startedAt": iso(self.first_ts), "lastEventAt": iso(self.last_ts), "errors": self.errors,

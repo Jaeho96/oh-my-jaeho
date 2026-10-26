@@ -1,39 +1,93 @@
 :root {
-  --bg: #f6f7f9;
-  --card: #ffffff;
-  --fg: #1c1e21;
-  --muted: #6b7280;
-  --line: #e5e7eb;
-  --accent: #4f46e5;
-  --tone-busy: #1d4ed8;
-  --tone-attention: #b45309;
-  --tone-good: #15803d;
-  --tone-bad: #b91c1c;
-  color-scheme: light dark;
+  --bg:#F3F5F8;
+  --card:#FFF;
+  --surface-subtle:#EDF1F6;
+  --fg:#202938;
+  --muted:#596477;
+  --line:#D9E0E8;
+  --control-line:#768196;
+  --accent:#4338CA;
+  --selected-bg:#EFEDFF;
+  --tone-attention:#92400E;
+  --attention-bg:#FFF4D6;
+  --tone-busy:#1D4ED8;
+  --busy-bg:#EAF1FF;
+  --tone-good:#166534;
+  --good-bg:#EAF6ED;
+  --tone-bad:#B91C1C;
+  --bad-bg:#FDEDEC;
+  color-scheme:light dark;
 }
-
-@media (prefers-color-scheme: dark) {
+@media(prefers-color-scheme:dark) {
   :root {
-    --bg: #0f1115;
-    --card: #171a21;
-    --fg: #e5e7eb;
-    --muted: #9ca3af;
-    --line: #2a2f3a;
-    --accent: #a5b4fc;
-    --tone-busy: #60a5fa;
-    --tone-attention: #fbbf24;
-    --tone-good: #4ade80;
-    --tone-bad: #f87171;
+    --bg:#10151D;
+    --card:#171E29;
+    --surface-subtle:#202A38;
+    --fg:#E8EDF5;
+    --muted:#AAB6C8;
+    --line:#344154;
+    --control-line:#758298;
+    --accent:#C4B5FD;
+    --selected-bg:#292443;
+    --tone-attention:#F6C76A;
+    --attention-bg:#352B18;
+    --tone-busy:#8CB4FF;
+    --busy-bg:#1E2C43;
+    --tone-good:#8AD9A3;
+    --good-bg:#1C3227;
+    --tone-bad:#FF9F9F;
+    --bad-bg:#3A2227;
   }
 }
-
 * {
-  box-sizing: border-box;
+  box-sizing:border-box
 }
-
 body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--fg);
-  font: 14px/1.45 -apple-system, 'Apple SD Gothic Neo', sans-serif;
+  margin:0;
+  background:var(--bg);
+  color:var(--fg);
+  font:14px/1.45 -apple-system,'Apple SD Gothic Neo',sans-serif
+}
+button,input,summary {
+  font:inherit
+}
+button,summary {
+  cursor:pointer
+}
+button {
+  color:inherit;
+  background:var(--card);
+  border:1px solid var(--control-line);
+  border-radius:6px;
+  min-height:40px;
+  padding:8px 12px
+}
+button:hover {
+  background:var(--surface-subtle)
+}
+:focus-visible {
+  outline:2px solid var(--accent);
+  outline-offset:2px
+}
+h1,h2,h3,p {
+  margin-top:0
+}
+pre {
+  white-space:pre-wrap;
+  overflow-wrap:anywhere
+}
+input {
+  accent-color:var(--accent)
+}
+@media(max-width:767px) {
+  button,summary {
+    min-height:44px
+  }
+}
+@media(prefers-reduced-motion:reduce) {
+  *,*::before,*::after {
+    animation:none!important;
+    transition:none!important;
+    scroll-behavior:auto!important
+  }
 }

@@ -228,5 +228,25 @@ class BoardTests(Base):
         self.assertEqual(board.parse_machines("work mac=유휴 맥북, other"), [("work mac", "유휴 맥북"), ("other", "other")])
 
 
+class ResultHeadTests(unittest.TestCase):
+    def test_result_head_uses_first_nonempty_last_file_line_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "demo.meta.json").write_text("{}")
+            (root / "demo.last.md").write_text("\n  ## **완료** — `검증`했습니다\n다음 줄")
+            runs, _ = board.collect_runs(directory, board.Rollouts(str(root / "sessions")))
+            self.assertEqual(runs[0]["resultHead"], "완료 — 검증했습니다")
+            (root / "demo.last.md").write_text("1. [완료](https://example.com) — 검증했습니다")
+            runs, _ = board.collect_runs(directory, board.Rollouts(str(root / "sessions")))
+            self.assertEqual(runs[0]["resultHead"], "완료 — 검증했습니다")
+            (root / "demo.last.md").write_text("# " + "가" * 250)
+            runs, _ = board.collect_runs(directory, board.Rollouts(str(root / "sessions")))
+            self.assertEqual(runs[0]["resultHead"], "가" * 200)
+            (root / "demo.last.md").unlink()
+            (root / "demo.jsonl").write_text(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "이벤트 결과"}}))
+            runs, _ = board.collect_runs(directory, board.Rollouts(str(root / "sessions")))
+            self.assertEqual(runs[0]["resultHead"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -174,3 +174,20 @@ class RegistryTests(Fixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+class StatusChangedAtTests(unittest.TestCase):
+    def test_status_clock_changes_only_when_status_changes(self):
+        track = office.AgentTrack('demo', 'codex')
+        track.apply([('turn_start', {})], 1000)
+        self.assertEqual(track.snapshot(1001, 600)['statusChangedAt'], office.iso(1000))
+        track.apply([('context', {'used': 200})], 1010)
+        self.assertEqual(track.snapshot(1011, 600)['statusChangedAt'], office.iso(1000))
+        track.apply([('turn_end', {'awaiting_input': True})], 1020)
+        self.assertEqual(track.snapshot(1021, 600)['statusChangedAt'], office.iso(1020))
+        self.assertEqual(track.snapshot(1030, 600)['statusChangedAt'], office.iso(1020))
+
+    def test_stalled_clock_uses_threshold_and_does_not_reset(self):
+        track = office.AgentTrack('demo', 'codex')
+        track.apply([('turn_start', {})], 1000)
+        self.assertEqual(track.snapshot(1700, 600)['statusChangedAt'], office.iso(1600))
+        self.assertEqual(track.snapshot(1800, 600)['statusChangedAt'], office.iso(1600))

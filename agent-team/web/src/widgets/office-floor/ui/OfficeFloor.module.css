@@ -1,11 +1,63 @@
-.wrap {
-  width: 100%;
-  min-width: 0;
-  overflow: auto;
-  border-radius: 10px;
+/* 사무실 높이만 내용에 맞추고 페이지의 목록·대기 띠 배치는 유지한다. */
+:global(div):has(> .office) {height:auto;}
+.office {
+  display:flex;
+  flex-direction:column;
+  width:100%;
+  height:auto;
+  align-self:start;
+  min-height:0;
+  min-width:0;
+  overflow:hidden;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:var(--surface-subtle);
 }
-
-.canvas {
-  display: block;
-  image-rendering: pixelated;
+.toolbar {
+  display:flex;
+  flex:0 0 auto;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+  min-width:0;
+  padding:5px 12px;
+  border-bottom:1px solid var(--line);
+  font:12px -apple-system,"Apple SD Gothic Neo",sans-serif;
+}
+.toolbar label {display:flex;align-items:center;gap:5px;min-width:0;max-width:100%;}
+.toolbar label:first-child {flex:0 1 220px;}
+.toolbar select,.toolbar button {
+  font:inherit;
+  color:var(--fg);
+  background:var(--card);
+  border:1px solid var(--control-line);
+  border-radius:4px;
+  min-height:32px;
+  min-width:0;
+  max-width:100%;
+  padding:6px 7px;
+}
+.toolbar select {flex:1;width:100%;text-overflow:ellipsis;}
+.hint {margin-left:auto;color:var(--muted);}
+.wrap {height:384px;flex:0 0 auto;min-height:0;min-width:0;overflow:hidden;touch-action:none;}
+.canvas {display:block;image-rendering:pixelated;}
+.roomSummary {
+  display:flex;
+  flex:0 1 auto;
+  min-height:0;
+  flex-wrap:wrap;
+  gap:4px 18px;
+  padding:4px 12px;
+  font-size:12px;
+  color:var(--muted);
+  overflow:auto;
+  max-height:48px;
+  overflow-wrap:anywhere;
+}
+@media(max-width:767px) {
+  .hint {display:none;}
+  .toolbar {display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,86px);gap:6px;padding:6px 8px;}
+  .toolbar select,.toolbar button {min-height:44px;}
+  .toolbar label:first-child {flex:initial;}
+  .roomSummary {padding:4px 8px;max-height:40px;}
 }

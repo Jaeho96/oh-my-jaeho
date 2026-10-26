@@ -42,3 +42,10 @@ describe('AgentRoster', () => {
     expect(screen.getByText('지금 사무실에 아무도 없습니다.')).toBeInTheDocument();
   });
 });
+
+it('비어 있는 방의 오류와 숨긴 자동 리뷰 수를 보존한다',()=>{
+ receiveSnapshot(JSON.stringify({office:{rooms:[{id:'room',label:'검토실',teams:[],hidden:3,error:'수집 시간 초과'}]}}));
+ render(<AgentRoster/>);
+ expect(screen.getByRole('region',{name:'검토실'})).toHaveTextContent('자동 리뷰 3개 숨김');
+ expect(screen.getByRole('alert')).toHaveTextContent('수집 시간 초과');
+});
