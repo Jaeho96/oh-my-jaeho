@@ -80,6 +80,21 @@ class RunTeamTests(Base):
         for m in metas:
             self.assertRegex(json.loads(m.read_text())["name"], r"-t-[0-9a-f]{4}$")
 
+    def test_browser_attaches_preapproved_playwright_mcp(self):
+        shots = self.dir / "shots"
+        p = self.run_team("--browser", str(shots))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        cmd = json.loads(next(self.runs.glob("*.cmd.json")).read_text())["cmd"]
+        self.assertIn('mcp_servers.playwright.default_tools_approval_mode="approve"', cmd)
+        args = next(c for c in cmd if c.startswith("mcp_servers.playwright.args="))
+        self.assertIn("--output-dir=%s" % shots, args)
+        self.assertIn(str(shots), cmd[-1])                  # 과제 본문에도 저장 위치를 알린다
+
+    def test_without_browser_no_mcp_is_added(self):
+        self.run_team()
+        cmd = json.loads(next(self.runs.glob("*.cmd.json")).read_text())["cmd"]
+        self.assertFalse(any("mcp_servers.playwright" in c for c in cmd))
+
     def test_name_with_path_separator_is_rejected(self):
         args = [sys.executable, str(HERE / "run_team.py"), "--name", "../x", "--cwd", str(self.dir),
                 "--task", "x", "--runs", str(self.runs)]

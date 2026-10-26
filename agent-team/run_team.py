@@ -136,6 +136,9 @@ def main():
     ap.add_argument("--write", action="store_true", help="cwd 안 쓰기 허용(workspace-write). 기본은 읽기 전용")
     ap.add_argument("--add-dir", action="append", default=[], help="쓰기를 허용할 폴더를 더한다(--write 와 함께)")
     ap.add_argument("--timeout", type=int, default=0, help="이 초를 넘기면 멈춘다(0 이면 제한 없음)")
+    ap.add_argument("--image", action="append", default=[], help="과제와 함께 넘길 그림(화면 캡처 등). 여러 번 줄 수 있다")
+    ap.add_argument("--browser", metavar="DIR",
+                    help="Playwright MCP 를 붙인다(샌드박스 안에서는 크롬이 안 뜬다). 캡처는 DIR 에 저장하게 한다")
     ap.add_argument("--background", action="store_true", help="감시 프로세스를 띄우고 바로 돌아온다")
     ap.add_argument("--runs", default=os.environ.get("AGENT_BOARD_RUNS", DEFAULT_RUNS))
     ap.add_argument("--extra", action="append", default=[], help="codex exec 에 그대로 넘길 인자")
@@ -162,6 +165,11 @@ def main():
         write_rule = "쓰기는 이 폴더 안에서만 허용된다: %s. 고친 파일은 보고에 적는다." % ", ".join(dirs)
     else:
         write_rule = "이번 실행은 읽기 전용이다. 파일을 고치지 말고, 고칠 것은 패치 제안으로 적는다."
+    shots = os.path.abspath(os.path.expanduser(args.browser)) if args.browser else None
+    if shots:
+        # 상대 경로로 저장하면 cwd 맨 위에 떨어져 커밋될 수 있어 절대 경로를 못 박는다
+        write_rule += (" 브라우저: playwright MCP 도구로 화면을 열고 캡처할 수 있다. 캡처는 %s 아래 절대 경로로 저장하고,"
+                       " 저장한 그림을 view_image 로 직접 본 뒤 판단한다." % shots)
     prompt = (TEAM_PROMPT if args.mode == "team" else SINGLE_PROMPT).format(
         task=task.strip(), write_rule=write_rule, max_agents=args.max_agents)
 
@@ -171,7 +179,15 @@ def main():
            "--skip-git-repo-check", "-o", base + ".last.md"]
     for d in args.add_dir:
         cmd += ["--add-dir", os.path.abspath(os.path.expanduser(d))]
-    cmd += args.extra + [prompt]
+    for img in args.image:
+        cmd += ["-i", os.path.abspath(os.path.expanduser(img))]
+    if shots:
+        # MCP 서버는 샌드박스 밖에서 돈다. exec 는 승인 창을 못 띄우므로 이 서버 도구만 미리 허용한다
+        cmd += ["-c", 'mcp_servers.playwright.command="npx"',
+                "-c", "mcp_servers.playwright.args=%s" % json.dumps(
+                    ["@playwright/mcp@latest", "--headless", "--isolated", "--output-dir=" + shots]),
+                "-c", 'mcp_servers.playwright.default_tools_approval_mode="approve"']
+    cmd += args.extra + ["--", prompt]          # -i 는 값을 여럿 받으므로 -- 로 과제 본문과 가른다
 
     meta = {"name": name, "mode": args.mode, "model": args.model, "effort": args.effort, "cwd": cwd,
             "write": args.write, "add_dirs": args.add_dir, "max_agents": args.max_agents,
