@@ -247,6 +247,13 @@ class ResultHeadTests(unittest.TestCase):
             runs, _ = board.collect_runs(directory, board.Rollouts(str(root / "sessions")))
             self.assertEqual(runs[0]["resultHead"], "")
 
+    def test_result_head_strips_bold_numbering_but_keeps_meaningful_symbols(self):
+        # 실제 Codex 보고 첫 줄 모양. 낱 ~ 를 지우면 「결함 1~4」가 「결함 14」로 뜻이 바뀐다(10/26 실데이터에서 봄)
+        self.assertEqual(board.result_head("**1. 됐다 — 결함 1~4를 고쳤다.**"), "됐다 — 결함 1~4를 고쳤다.")
+        self.assertEqual(board.result_head("`run_team` 옵션을 붙였다"), "run_team 옵션을 붙였다")
+        self.assertEqual(board.result_head("2026.10.23 회의 결과"), "2026.10.23 회의 결과")
+        self.assertEqual(board.result_head("> - **결론** ~~옛말~~ 새말"), "결론 옛말 새말")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -441,6 +441,23 @@ def team_totals(node):
 
 # ---------- 팀 실행 (run_team.py 기록) ----------
 
+HEAD_PREFIX = re.compile(r"^(?:[#>*+\-]+\s*|\d+[.)]\s+)")   # 머리표·인용·목록 번호. 번호는 뒤에 빈칸이 있어야(2026.10.23 보호)
+HEAD_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+HEAD_EMPHASIS = re.compile(r"\*\*|__|~~|`")                # 짝 기호만 지운다. 낱 ~ · _ 는 뜻이 있다(1~4, run_team)
+
+
+def result_head(text):
+    """마지막 보고의 첫 줄을 카드 제목으로 쓴다. 「**1. 됐다 — …**」 처럼 굵게 감싼 번호도 벗긴다."""
+    line = next((s.strip() for s in text.splitlines() if s.strip()), "")
+    line = HEAD_EMPHASIS.sub("", HEAD_LINK.sub(r"\1", line)).strip()
+    while True:
+        stripped = HEAD_PREFIX.sub("", line, count=1).strip()
+        if stripped == line:
+            break
+        line = stripped
+    return line[:200]
+
+
 def collect_runs(runs_dir, rollouts, limit=20):
     runs, team_ids = [], set()
     if not os.path.isdir(runs_dir):
@@ -455,10 +472,7 @@ def collect_runs(runs_dir, rollouts, limit=20):
             r["meta"] = {k: meta.get(k) for k in ("mode", "model", "effort", "cwd", "write", "task", "started",
                                                   "finished", "exit_code", "error", "timed_out", "pid")}
             last_text = read_text(base + ".last.md") or ""
-            first_line = next((line.strip() for line in last_text.splitlines() if line.strip()), "")
-            first_line = re.sub(r"^\s*(?:[#>*+\-]+|\d+[.)])\s*", "", first_line)
-            first_line = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", first_line)
-            r["resultHead"] = re.sub(r"[*_`~]", "", first_line).strip()[:200]
+            r["resultHead"] = result_head(last_text)
             r["final"] = (last_text or r.get("final") or "")[:4000]
             r["state"] = run_state(meta, r)
             r["elapsed_sec"] = elapsed(meta.get("started"), meta.get("finished") or (r.get("updated") if r["state"] != "running" else None))
