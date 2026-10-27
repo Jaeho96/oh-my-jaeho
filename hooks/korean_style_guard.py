@@ -15,7 +15,9 @@
   -m "$(cat <<'EOF' … EOF)"). 같은 명령줄의 다른 명령은 보지 않는다. Codex 는 exec 자바스크립트의 cmd 문자열에서 찾는다.
 빼는 것: 코드 블록, 백틱 안, 「> 」 인용 줄, 「」 안, 기호만 든 괄호, 기호와 금지어를 설명하는 rules/vocabulary.md · rules/korean-style.md.
 연결어미 뒤 쉼표는 오탐이 많아 검사하지 않는다(지침으로만 둔다).
-- 같은 작업 묶음에는 한 번만 되돌린다. 세션마다 어디까지 봤는지 적어 둔다. 재진입(stop_hook_active)과 예약 작업 세션은 통과.
+- 같은 사용자 지시 안에서는 한 번만 되돌린다. 세션마다 마지막으로 되돌린 줄을 적어 두고, 그 줄이 지금 지시 뒤면 통과시킨다.
+  stop_hook_active 만 보고 통과시키지 않는다. 그 값은 다른 Stop 훅(위키 기록 확인, Codex 검토)이 되돌려도 켜져서,
+  그 뒤에 이어 쓴 글을 하나도 못 보게 된다. 예약 작업 세션은 통과.
 - 남의 글 인용처럼 고치면 안 되는 것이면 모델이 이유를 한 줄 말하고 끝낼 수 있다.
 - 오류가 나면 언제나 통과시킨다. 훅 고장이 작업 종료를 막으면 안 된다.
 
@@ -111,15 +113,24 @@ def first_line(seg):
     return seg
 
 
+CD = re.compile(r"""(?:^|&&|;|\|\||\n)\s*cd\s+("[^"]*"|'[^']*'|[^\s;&|]+)""")
+
+
+def resolve(path, base):
+    path = os.path.expanduser(path.strip("'\""))
+    return path if os.path.isabs(path) or not base else os.path.join(base, path)
+
+
 def commit_messages(cmd, cwd=None):
-    """셸 명령에서 git commit 메시지만 꺼낸다."""
+    """셸 명령에서 git commit 메시지만 꺼낸다. -F 파일은 앞선 cd, git -C 를 따라간 폴더 기준으로 읽는다."""
     out = []
     for m in GIT_COMMIT.finditer(cmd):
         base = cwd
+        for c in CD.finditer(cmd[:m.start()]):
+            base = resolve(c.group(1), base)
         opts = re.search(r"""-C\s+("[^"]*"|'[^']*'|\S+)""", m.group(1) or "")
         if opts:
-            path = opts.group(1).strip("'\"")
-            base = path if os.path.isabs(path) or not cwd else os.path.join(cwd, path)
+            base = resolve(opts.group(1), base)
         rest = cmd[m.end():]
         head = first_line(rest)
         try:
@@ -161,17 +172,34 @@ def commit_messages(cmd, cwd=None):
                 if body is not None:
                     out.append(body)
                 continue
-            path = f if os.path.isabs(f) or not base else os.path.join(base, f)
-            try:
-                with open(path, encoding="utf-8", errors="replace") as fh:
-                    out.append(fh.read())
-            except OSError:
-                pass
+            text = read_file(resolve(f, base))
+            if text is not None:
+                out.append(text)
+    return out
+
+
+def claude_results(lines):
+    """도구 결과(toolUseResult)를 tool_use_id 로 묶는다. Edit 결과에는 수정 직전 파일(originalFile)과 바뀐 줄(structuredPatch)이 있다."""
+    out = {}
+    for line in lines:
+        if '"toolUseResult"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        res = d.get("toolUseResult")
+        content = (d.get("message") or {}).get("content")
+        if isinstance(res, dict) and isinstance(content, list):
+            for c in content:
+                if isinstance(c, dict) and c.get("tool_use_id"):
+                    out[c["tool_use_id"]] = res
     return out
 
 
 def claude_pieces(lines):
-    """(줄 번호, 종류, 경로, 글, 작업 폴더). 종류는 prompt · scheduled · answer · write · edit · commit."""
+    """(줄 번호, 종류, 경로, 글, 작업 폴더, 덧붙임). 종류는 prompt · scheduled · answer · write · edit · shell."""
+    results = claude_results(lines)
     first = True
     for n, line in enumerate(lines):
         try:
@@ -188,43 +216,58 @@ def claude_pieces(lines):
                 text = " ".join(x.get("text", "") for x in content or [] if isinstance(x, dict) and x.get("type") == "text")
             if text.strip():
                 if first and text.lstrip().startswith("<scheduled-task"):
-                    yield n, "scheduled", "", "", cwd
+                    yield n, "scheduled", "", "", cwd, {}
                 first = False
-                yield n, "prompt", "", "", cwd
+                yield n, "prompt", "", "", cwd, {}
         if kind != "assistant" or not isinstance(content, list):
             continue
         for item in content:
             if not isinstance(item, dict):
                 continue
             if item.get("type") == "text":
-                yield n, "answer", "", item.get("text", ""), cwd
+                yield n, "answer", "", item.get("text", ""), cwd, {}
             elif item.get("type") == "tool_use":
                 name, inp = item.get("name", ""), item.get("input") or {}
+                path = inp.get("file_path", "")
+                res = results.get(item.get("id")) or {}
                 if name == "Write":
-                    yield n, "write", inp.get("file_path", ""), inp.get("content") or "", cwd
-                elif name in EDIT_TOOLS:
-                    news = [inp.get("new_string") or ""]
-                    news += [e.get("new_string", "") for e in inp.get("edits") or [] if isinstance(e, dict)]
-                    for new in news:
-                        if new:
-                            yield n, "edit", inp.get("file_path", ""), new, cwd
+                    yield n, "write", path, inp.get("content") or "", cwd, {}
+                elif name == "Edit" and inp.get("new_string"):
+                    yield n, "edit", path, inp["new_string"], cwd, {
+                        "result": res, "old": inp.get("old_string") or "", "all": bool(inp.get("replace_all"))}
+                elif name == "MultiEdit":                    # 결과의 바뀐 줄(structuredPatch)로 자리를 찾는다
+                    new = "\n".join(e.get("new_string", "") for e in inp.get("edits") or [] if isinstance(e, dict))
+                    if new:
+                        yield n, "edit", path, new, cwd, {"result": {"structuredPatch": res.get("structuredPatch")}}
                 elif name == "Bash":
-                    yield n, "shell", "", inp.get("command", ""), cwd
+                    yield n, "shell", "", inp.get("command", ""), cwd, {}
 
 
 def patch_files(text):
-    """apply_patch 글에서 (종류, 파일, 더한 줄). Add File 은 write, Update File 은 edit."""
+    """apply_patch 글에서 (종류, 파일, 더한 글, 덩어리 목록). Add File 은 write, Update File 은 edit.
+    덩어리(hunk)는 문맥 · 뺀 · 더한 줄을 표시(' ', '-', '+')를 붙인 채 차례대로 담는다."""
     files, cur = [], None
     for line in text.split("\n"):
         m = re.match(r"\*\*\* (Add|Update) File: (.+)", line)
         if m:
-            cur = ["write" if m.group(1) == "Add" else "edit", m.group(2).strip(), []]
+            cur = {"kind": "write" if m.group(1) == "Add" else "edit", "path": m.group(2).strip(),
+                   "added": [], "hunks": [[]]}
             files.append(cur)
         elif line.startswith("*** "):
             cur = cur if line.startswith("*** Move to:") else None
-        elif cur and line.startswith("+") and not line.startswith("+++"):
-            cur[2].append(line[1:])
-    return [(k, p, "\n".join(ls)) for k, p, ls in files]
+        elif cur is None:
+            continue
+        elif line.startswith("@@"):
+            cur["hunks"].append([])
+        elif line.startswith("+"):
+            cur["added"].append(line[1:])
+            cur["hunks"][-1].append(line)
+        elif line.startswith("-"):
+            cur["hunks"][-1].append(line)
+        else:
+            cur["hunks"][-1].append(" " + line[1:] if line.startswith(" ") else " " + line)
+    return [(f["kind"], f["path"], "\n".join(f["added"]),
+             [h for h in f["hunks"] if any(l.startswith("+") for l in h)]) for f in files]
 
 
 def shell_from_args(args):
@@ -240,6 +283,35 @@ def shell_from_args(args):
     return ""
 
 
+def js_objects(code, call):
+    """code 에서 call({ … }) 의 객체 글을 차례로 꺼낸다. 문자열 안의 중괄호는 세지 않는다."""
+    for m in re.finditer(re.escape(call) + r"\(\s*\{", code):
+        start = m.end() - 1
+        depth, quote, j = 0, None, start
+        while j < len(code):
+            ch = code[j]
+            if quote:
+                if ch == "\\":
+                    j += 1
+                elif ch == quote:
+                    quote = None
+            elif ch in "\"'`":
+                quote = ch
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    yield code[start:j + 1]
+                    break
+            j += 1
+
+
+def js_prop(obj, name):
+    m = re.search(r"\b%s\s*:\s*(%s)" % (name, JS_STR), obj, re.S)
+    return js_unescape(m.group(1)[1:-1]) if m else None
+
+
 def codex_pieces(lines):
     cwd = None
     for n, line in enumerate(lines):
@@ -251,63 +323,120 @@ def codex_pieces(lines):
         if d.get("type") in ("session_meta", "turn_context") and p.get("cwd"):
             cwd = p.get("cwd")
         if d.get("type") == "event_msg" and p.get("type") in ("task_started", "user_message"):
-            yield n, "prompt", "", "", cwd   # 턴 시작
+            yield n, "prompt", "", "", cwd, {}   # 턴 시작
             continue
         if d.get("type") != "response_item":
             continue
         if p.get("type") == "message" and p.get("role") == "assistant":
             for item in p.get("content") or []:
                 if isinstance(item, dict) and item.get("type") == "output_text":
-                    yield n, "answer", "", item.get("text", ""), cwd
+                    yield n, "answer", "", item.get("text", ""), cwd, {}
             continue
         if p.get("type") not in ("custom_tool_call", "function_call"):
             continue
         raw = p.get("input") or p.get("arguments") or ""
         raw = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
-        shells, patches = [], []
+        shells, patches = [], []                      # shells: (명령, 명령 폴더)
         if p.get("type") == "function_call":
             try:
                 args = json.loads(raw)
             except ValueError:
                 args = {}
-            shells.append(shell_from_args(args))
-            if isinstance(args, dict) and isinstance(args.get("input"), str):
-                patches.append(args["input"])
+            if isinstance(args, dict):
+                shells.append((shell_from_args(args), args.get("workdir") or args.get("cwd")))
+                if isinstance(args.get("input"), str):
+                    patches.append(args["input"])
         elif p.get("name") == "apply_patch":
             patches.append(raw)
         else:                                         # exec: 자바스크립트
-            shells += [js_unescape(s[1:-1]) for s in JS_CMD.findall(raw)]
+            objs = list(js_objects(raw, "exec_command"))
+            if objs:
+                shells += [(js_prop(o, "cmd"), js_prop(o, "workdir")) for o in objs]
+            else:
+                shells += [(js_unescape(s[1:-1]), None) for s in JS_CMD.findall(raw)]
             patches += [js_unescape(s[1:-1]) for s in JS_PATCH.findall(raw)]
         for patch in patches:
             if "*** Begin Patch" in patch:
-                for kind, path, added in patch_files(patch):
+                for kind, path, added, hunks in patch_files(patch):
                     if path and not os.path.isabs(path) and cwd:
                         path = os.path.join(cwd, path)
-                    yield n, kind, path, added, cwd
-        for sh in shells:
+                    yield n, kind, path, added, cwd, {"hunks": hunks}
+        for sh, wd in shells:
             if sh:
-                yield n, "shell", "", sh, cwd
+                yield n, "shell", "", sh, resolve(wd, cwd) if wd else cwd, {}
 
 
-def file_body(kind, path, text):
-    """검사할 글. Edit 는 지금 파일에서 새 글이 있는 자리를 파일 전체 기준으로 지운(mask) 글로 본다."""
-    if kind == "write":
-        return mask(text)
+def read_file(path):
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
-            whole = f.read()
+            return f.read()
     except OSError:
-        return mask(text)
-    masked = mask(whole)
-    i = whole.find(text)
-    if i >= 0:
-        return masked[i:i + len(text)]
-    parts = []
-    for line in text.split("\n"):          # 뒤에 또 고쳐 한 덩어리로 없으면 줄마다 찾는다. 이제 없는 줄은 넘긴다
-        j = whole.find(line) if line.strip() else -1
-        if j >= 0:
-            parts.append(masked[j:j + len(line)])
-    return "\n".join(parts)
+        return None
+
+
+def ink(s):
+    """지워지지 않고 남은 글자 수. 자리를 못 정할 때 가장 많이 지워진(코드 안) 자리를 고르는 데 쓴다."""
+    return len(re.sub(r"\s", "", s))
+
+
+def hunk_body(whole, hunks, hints=None):
+    """덩어리(문맥 + 더한 줄)를 파일에서 찾아 더한 줄만 지운(mask) 글로 돌려준다. 하나도 못 찾으면 None.
+    여러 자리에 있으면 줄 번호 힌트에 가장 가까운 자리, 힌트가 없으면 가장 많이 지워진 자리를 고른다."""
+    lines = whole.split("\n")
+    masked = mask(whole).split("\n")
+    parts, found = [], False
+    for k, hunk in enumerate(hunks):
+        kept = [l for l in hunk if l[:1] in (" ", "+")]
+        block = [l[1:] for l in kept]
+        added = [i for i, l in enumerate(kept) if l.startswith("+")]
+        if not block or not added:
+            continue
+        starts = [s for s in range(len(lines) - len(block) + 1)
+                  if lines[s] == block[0] and lines[s:s + len(block)] == block]
+        if not starts:
+            continue
+        found = True
+        segs = {s: [masked[s + i] for i in added] for s in starts}
+        hint = hints[k] if hints and k < len(hints) else None
+        s = min(starts, key=lambda x: abs(x - hint)) if hint is not None else min(starts, key=lambda x: ink("".join(segs[x])))
+        parts += segs[s]
+    return "\n".join(parts) if found else None
+
+
+def edit_body(path, new, extra):
+    """Edit · 패치로 새로 쓴 글을, 실제로 바뀐 자리에서 파일 전체 기준으로 지운(mask) 글."""
+    res = extra.get("result") or {}
+    orig, old = res.get("originalFile"), extra.get("old")
+    if isinstance(orig, str) and old and old in orig:         # 수정 직전 파일에 그 수정을 다시 적용해 자리를 안다
+        starts, i, shift = [], orig.find(old), 0
+        while i >= 0:
+            starts.append(i + shift)
+            if not extra.get("all"):
+                break
+            shift += len(new) - len(old)
+            i = orig.find(old, i + len(old))
+        post = orig.replace(old, new) if extra.get("all") else orig.replace(old, new, 1)
+        masked = mask(post)
+        return "\n".join(masked[s:s + len(new)] for s in starts)
+    whole = read_file(path)
+    if whole is None:
+        return mask(new)
+    patch = res.get("structuredPatch") or extra.get("hunks")
+    if patch:
+        if isinstance(patch[0], dict):                       # Claude: 줄 번호(newStart)가 있다
+            hints = [h.get("newStart", 1) - 1 for h in patch]
+            patch = [h.get("lines") or [] for h in patch]
+        else:
+            hints = None
+        body = hunk_body(whole, patch, hints)
+        if body is not None:
+            return body
+    masked = mask(whole)                                     # 마지막 수단: 같은 글이 있는 자리 중 가장 많이 지워진 자리
+    segs, i = [], whole.find(new)
+    while i >= 0:
+        segs.append(masked[i:i + len(new)])
+        i = whole.find(new, i + 1)
+    return min(segs, key=ink) if segs else ""
 
 
 def escapes(text):
@@ -325,7 +454,7 @@ def snippet(text, m):
 
 def find(pieces):
     hits = []
-    for _, kind, path, text, cwd in pieces:
+    for _, kind, path, text, cwd, extra in pieces:
         if not text:
             continue
         targets = []                       # (어디, 문장 검사할 글, 원문)
@@ -335,7 +464,9 @@ def find(pieces):
             if skip_file(path):
                 continue
             where = "파일 %s" % os.path.basename(path)
-            body = file_body(kind, path, text) if path.endswith(".md") else None
+            body = None
+            if path.endswith(".md"):
+                body = mask(text) if kind == "write" else edit_body(path, text, extra)
             targets.append((where, body, text))
         elif kind == "shell":
             for msg in commit_messages(text, cwd):
@@ -383,8 +514,6 @@ def pieces_of(lines):
 
 def main():
     data = json.loads(sys.stdin.read() or "{}")
-    if data.get("stop_hook_active"):
-        return {}
     path = data.get("transcript_path")
     if not path or not os.path.isfile(path):
         return {}
@@ -395,8 +524,9 @@ def main():
     key = data.get("session_id") or path
     state = load_state()
     turn = max([p[0] for p in pieces if p[1] == "prompt"] or [-1])
-    start = max(turn, state.get(key, -1))
-    hits = find(p for p in pieces if p[0] > start)
+    if state.get(key, -1) > turn:                 # 이 지시 안에서 이미 한 번 되돌렸다
+        return {}
+    hits = find(p for p in pieces if p[0] > turn)
     if not hits:
         return {}
     state[key] = len(lines) - 1
@@ -410,10 +540,10 @@ def main():
 
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--dump":
-        for n, kind, name, text, _ in pieces_of(read_lines(sys.argv[2])):
+        for n, kind, name, text, cwd, _ in pieces_of(read_lines(sys.argv[2])):
             print("%5d %-9s %s %s" % (n, kind, name, text[:120].replace("\n", " ")))
             if kind == "shell":
-                for msg in commit_messages(text):
+                for msg in commit_messages(text, cwd):
                     print("      커밋 메시지: %s" % msg[:120].replace("\n", " "))
         sys.exit(0)
     try:

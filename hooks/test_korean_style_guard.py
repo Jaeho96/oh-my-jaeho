@@ -20,12 +20,25 @@ def answer(text):
     return {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}
 
 
-def tool(name, **inp):
-    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": name, "input": inp}]}}
+def tool(name, tool_id=None, **inp):
+    item = {"type": "tool_use", "name": name, "input": inp}
+    if tool_id:
+        item["id"] = tool_id
+    return {"type": "assistant", "message": {"content": [item]}}
 
 
-def codex_meta():
-    return {"type": "session_meta", "payload": {"id": "s"}}
+def result(tool_id, **res):
+    """Claude Code 가 도구 결과 줄에 남기는 toolUseResult(Edit 은 originalFile · structuredPatch)."""
+    return {"type": "user", "toolUseResult": res,
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": "ok"}]}}
+
+
+def js_string(text):
+    return '"%s"' % text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def codex_meta(cwd="/repo"):
+    return {"type": "session_meta", "payload": {"id": "s", "cwd": cwd}}
 
 
 def codex_turn():
@@ -105,11 +118,15 @@ class GuardTests(unittest.TestCase):
         cmd = "git commit -F - <<'EOF'\nfix: 고친다\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nEOF"
         self.assertBlocked(self.run_guard([prompt("커밋"), tool("Bash", command=cmd)]), "커밋 메시지: Claude 표기")
 
-    def test_reentry_and_second_stop_pass(self):
+    def test_once_per_user_turn(self):
         entries = [prompt("해"), answer("결과 %s 이렇다" % DASH)]
-        self.assertEqual(self.run_guard(entries, active=True), {})
-        self.assertBlocked(self.run_guard(entries), "줄표")
-        self.assertEqual(self.run_guard(entries + [answer("인용이라 그대로 둡니다.")]), {})
+        # 다른 Stop 훅이 되돌린 뒤(stop_hook_active)라도 이 훅이 아직 묻지 않았으면 본다
+        self.assertBlocked(self.run_guard(entries, active=True), "줄표")
+        # 한 번 되돌린 뒤에는 같은 지시 안에서 다시 묻지 않는다(설명에 또 줄표가 있어도)
+        self.assertEqual(self.run_guard(entries + [answer("인용 %s 이라 그대로 둡니다." % DASH)], active=True), {})
+        self.assertEqual(self.run_guard(entries + [answer("또 %s" % DASH)]), {})
+        # 새 지시가 오면 다시 본다
+        self.assertBlocked(self.run_guard(entries + [prompt("다음"), answer("새 %s 글" % DASH)]), "줄표")
 
     def test_scheduled_session_passes(self):
         self.assertEqual(self.run_guard([prompt("<scheduled-task name='x'>"), answer("a %s b" % DASH)]), {})
@@ -166,6 +183,56 @@ class GuardTests(unittest.TestCase):
         a, b = "\\" + "u" + "ac00", "\\" + "u" + "d7a3"
         out = self.run_guard([prompt("써"), tool("Write", file_path="/x/k.py", content="re.compile('[%s-%s]+')" % (a, b))])
         self.assertEqual(out, {})
+
+    def test_edit_location_from_original_file(self):
+        doc = self.dir / "doc.md"
+        line = "x %s y" % DASH
+        orig = "```\n%s\n```\n옛 문장\n" % line            # 같은 글이 코드 예문에 먼저 있고, 고친 곳은 본문
+        doc.write_text(orig.replace("옛 문장", line), encoding="utf-8")
+        out = self.run_guard([prompt("고쳐"), tool("Edit", "t1", file_path=str(doc), old_string="옛 문장", new_string=line),
+                              result("t1", originalFile=orig, oldString="옛 문장", newString=line, structuredPatch=[])])
+        self.assertBlocked(out, "파일 doc.md: 줄표")
+        orig2 = "%s\n```\n옛 코드\n```\n" % line            # 같은 글이 본문에 먼저 있고, 고친 곳은 코드 안
+        doc.write_text(orig2.replace("옛 코드", line), encoding="utf-8")
+        out = self.run_guard([prompt("고쳐"), tool("Edit", "t2", file_path=str(doc), old_string="옛 코드", new_string=line),
+                              result("t2", originalFile=orig2, oldString="옛 코드", newString=line, structuredPatch=[])],
+                             session="s2")
+        self.assertEqual(out, {})
+
+    def test_edit_location_from_structured_patch(self):
+        doc = self.dir / "doc.md"
+        line = "x %s y" % DASH
+        doc.write_text("```\n%s\n```\n%s\n" % (line, line), encoding="utf-8")
+        prose = [{"oldStart": 4, "oldLines": 1, "newStart": 4, "newLines": 1, "lines": ["-옛", "+" + line]}]
+        code = [{"oldStart": 2, "oldLines": 1, "newStart": 2, "newLines": 1, "lines": ["-옛", "+" + line]}]
+        out = self.run_guard([prompt("고쳐"), tool("Edit", "t1", file_path=str(doc), old_string="옛", new_string=line),
+                              result("t1", originalFile=None, structuredPatch=prose)])
+        self.assertBlocked(out, "파일 doc.md: 줄표")
+        out = self.run_guard([prompt("고쳐"), tool("Edit", "t2", file_path=str(doc), old_string="옛", new_string=line),
+                              result("t2", originalFile=None, structuredPatch=code)], session="s2")
+        self.assertEqual(out, {})
+
+    def test_codex_patch_hunk_location(self):
+        doc = self.dir / "doc.md"
+        line = "x %s y" % DASH
+        doc.write_text("```\n%s\n```\n\n제목\n%s\n" % (line, line), encoding="utf-8")
+        prose = "*** Begin Patch\n*** Update File: %s\n@@\n 제목\n+%s\n*** End Patch" % (doc, line)
+        out = self.run_guard([codex_meta(), codex_turn(), codex_exec("text(await tools.apply_patch(%s))" % js_string(prose))])
+        self.assertBlocked(out, "파일 doc.md: 줄표")
+        doc.write_text("제목\n%s\n```\n%s\n```\n" % (line, line), encoding="utf-8")
+        code = "*** Begin Patch\n*** Update File: %s\n@@\n ```\n+%s\n ```\n*** End Patch" % (doc, line)
+        out = self.run_guard([codex_meta(), codex_turn(), codex_exec("text(await tools.apply_patch(%s))" % js_string(code))],
+                             session="c2")
+        self.assertEqual(out, {})
+
+    def test_codex_workdir_and_claude_cd(self):
+        other = self.dir / "other"
+        other.mkdir()
+        (other / "msg.txt").write_text("fix: 줄표 %s 있음\n" % DASH, encoding="utf-8")
+        js = "text(await tools.exec_command({cmd: %s, workdir: %s}))" % (js_string("git commit -F msg.txt"), js_string(str(other)))
+        self.assertBlocked(self.run_guard([codex_meta("/repo"), codex_turn(), codex_exec(js)]), "커밋 메시지: 줄표")
+        cmd = "cd %s && git commit -F msg.txt" % other
+        self.assertBlocked(self.run_guard([prompt("커밋"), tool("Bash", command=cmd)], session="s2"), "커밋 메시지: 줄표")
 
 
 if __name__ == "__main__":
