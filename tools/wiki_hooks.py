@@ -9,6 +9,7 @@
 넣는 것 — 세션 시작: wiki_sync.py --detach / 작업 끝: wiki_log_guard.py + wiki_sync.py --detach.
 이미 있는 우리 묶음이 원하는 모양과 다르면(예: --sync-only 로 바꿀 때) 그 묶음만 원하는 모양으로 바꾼다.
 기존 훅(다른 도구가 넣은 것)은 건드리지 않고 그 뒤에 묶음 하나를 덧붙인다. 우리 항목은 명령에 `/.claude/hooks/wiki_` 가 든 것이다.
+묶음 단위가 아니라 훅 항목 단위로 우리 것만 빼고 맞춘다. 같은 묶음에 다른 도구의 훅이 섞여 있어도 그 훅은 남는다 (2026-10-27).
 쓰기 전 원본은 ~/.omj/backups/<시각>/ 에 둔다. Codex 는 다음 시작 때 새 훅 신뢰(Trust) 승인을 한 번 묻는다.
 훅 파일 자체(~/.claude/hooks/*.py 링크)는 tools/sync.py 가 건다.
 """
@@ -30,33 +31,54 @@ WANT = {"SessionStart": [SYNC], "Stop": [GUARD, SYNC]}
 WANT_SYNC_ONLY = {"SessionStart": [SYNC], "Stop": [SYNC]}
 
 
-def ours(group):
-    return any(MARK in h.get("command", "") for h in group.get("hooks", []))
+def is_ours(handler):
+    return MARK in handler.get("command", "")
 
 
 def names(handlers):
     return " + ".join(os.path.basename(h["command"].split('"')[1]) for h in handlers)
 
 
+def strip_ours(groups):
+    """묶음마다 우리 항목만 뺀다. 같은 묶음에 든 다른 도구의 훅은 남기고, 우리 항목만 있던 묶음은 없앤다.
+    돌려주는 것: (남은 묶음, 뺀 항목 수, 첫 우리 항목이 있던 자리)."""
+    rest, removed, at = [], 0, None
+    for g in groups:
+        handlers = g.get("hooks", [])
+        keep = [h for h in handlers if not is_ours(h)]
+        if len(keep) != len(handlers):
+            removed += len(handlers) - len(keep)
+            if at is None:
+                at = len(rest)
+        if len(keep) == len(handlers):
+            rest.append(g)
+        elif keep:
+            rest.append(dict(g, hooks=keep))
+    return rest, removed, at
+
+
 def plan(data, remove, want=WANT):
     hooks = data.setdefault("hooks", {})
     notes = []
     for event, handlers in want.items():
-        groups = hooks.setdefault(event, [])
-        mine = [g for g in groups if ours(g)]
+        groups = hooks.get(event, [])
+        rest, removed, at = strip_ours(groups)
+        group = {"hooks": [dict(h) for h in handlers]}
+        mine = [g for g in groups if any(is_ours(h) for h in g.get("hooks", []))]
         if remove:
-            if mine:
-                hooks[event] = [g for g in groups if not ours(g)]
-                notes.append("%s: 위키 훅 묶음 %d개 뺌" % (event, len(mine)))
-        elif not mine:
-            groups.append({"hooks": [dict(h) for h in handlers]})
+            if removed:
+                if rest:
+                    hooks[event] = rest
+                else:
+                    del hooks[event]
+                notes.append("%s: 위키 훅 %d개 뺌" % (event, removed))
+        elif not removed:
+            hooks[event] = groups + [group]
             notes.append("%s: 위키 훅 묶음 추가 (%s)" % (event, names(handlers)))
-        elif len(mine) == 1 and [h.get("command") for h in mine[0]["hooks"]] == [h["command"] for h in handlers]:
-            notes.append("%s: 이미 있음" % event)
-        else:                 # 모양이 다르다 — 첫 우리 묶음 자리에 원하는 묶음 하나만 남긴다
-            at = groups.index(mine[0])
-            rest = [g for g in groups if not ours(g)]
-            rest.insert(min(at, len(rest)), {"hooks": [dict(h) for h in handlers]})
+        elif len(mine) == 1 and [h.get("command") for h in mine[0].get("hooks", [])] == [h["command"] for h in handlers]:
+            notes.append("%s: 이미 있음" % event)   # 우리 묶음 하나에 다른 도구의 훅이 섞이지 않은 경우
+        else:                 # 모양이 다르다. 첫 우리 항목이 있던 자리에 원하는 묶음 하나만 남긴다
+            rest.insert(at, group)
             hooks[event] = rest
             notes.append("%s: 위키 훅 묶음을 맞춤 (%s)" % (event, names(handlers)))
     return notes
