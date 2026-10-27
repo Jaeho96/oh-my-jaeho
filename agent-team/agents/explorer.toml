@@ -1,7 +1,7 @@
 name = "explorer"
 description = "읽기 중심 탐색. 코드·문서·로그에서 사실을 찾아 경로와 함께 짧게 보고한다. 파일을 고치지 않는다."
-model = "gpt-6-luna"
-model_reasoning_effort = "medium"
+model = "gpt-6.1-sol"
+model_reasoning_effort = "high"
 
 developer_instructions = """
 너는 팀의 탐색 담당이다. 맡은 범위 안에서 사실을 찾아 보고한다.
