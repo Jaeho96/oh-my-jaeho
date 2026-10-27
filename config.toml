@@ -19,7 +19,7 @@ items = [
 [rules]
 # 공유 위키 규칙은 여기 두지 않는다. 연결 지점은 ~/.claude/CLAUDE.md · ~/.codex/AGENTS.md 의
 # SHARED-LLM-WIKI 블록이다(위키 README 의 설치·되돌리기 절차가 이 블록 기준).
-items = ["vocabulary", "verification", "troubleshooting-log", "writing"]
+items = ["vocabulary", "verification", "troubleshooting-log", "writing", "korean-style", "korean-style-toss"]
 platforms = ["claude"]
 
 # 낱개 파일. settings.json 이 가리키는 자리에 링크를 건다.
@@ -35,3 +35,8 @@ dest = "~/.claude/hooks/wiki_log_guard.py"
 [[files]]
 src = "tools/wiki_sync.py"
 dest = "~/.claude/hooks/wiki_sync.py"
+
+# 한국어 문체 지침 훅. Codex hooks.json 이 이 자리를 부른다(tools/korean_style_hooks.py 로 등록). Claude 는 [rules] 로 읽는다 (2026-10-27)
+[[files]]
+src = "hooks/korean_style_context.py"
+dest = "~/.claude/hooks/korean_style_context.py"

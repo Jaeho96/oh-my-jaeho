@@ -18,6 +18,7 @@ config.local.toml           이 기기만의 추가·제외 (커밋 안 함, 예
 skills/<이름>/SKILL.md      스킬 (Claude: ~/.claude/skills, Codex: ~/.agents/skills)
 rules/<이름>.md             항상 따르는 규칙 (Claude: ~/.claude/rules)
 statusline/                 상태줄 등 낱개 파일 (config.toml 의 [[files]])
+hooks/                      훅 스크립트 (config.toml 의 [[files]] 로 ~/.claude/hooks 에 연결, Codex hooks.json 도 같은 자리를 부름)
 tools/sync.py               배포 도구 (Python 3.11+, 추가 설치 없음)
 tools/check_public.py       공개 전 검사 (개인·회사 정보, 토큰, 절대 경로)
 docs/                       설계 메모·로드맵
@@ -34,7 +35,9 @@ docs/                       설계 메모·로드맵
 | 스킬 | `design-compare` | Claude Design 시안과 로컬 렌더를 대조해 미구현 차이만 골라 반영 |
 | 스킬 | `work-report` | 업무 현황판 기반 일보·주보와 놓친 일 점검 — **v0 뼈대**(실동작 본은 아직 로컬 비공개, 배포 목록에 없음) |
 | 규칙 | `vocabulary` · `verification` · `troubleshooting-log` · `writing` | 금지 단어, 작업 원칙과 완료 기준, 문제 해결 기록, 두괄식 쓰기 |
+| 규칙 | `korean-style` · `korean-style-toss` | 사람이 쓴 것처럼 읽히는 한국어 문체(빈 동사, 번역 투, 빈말, 확인한 만큼만 쓰기 등)와 토스 테크니컬 라이팅 가이드 예문. Codex 에는 훅으로 넣는다 |
 | 파일 | `statusline/statusline.py` | Claude Code 상태줄 (`~/.claude/statusline.py`로 연결) |
+| 파일 | `hooks/korean_style_context.py` | Codex 세션과 하위 에이전트가 시작할 때 한국어 문체 지침을 넣는 훅 (`tools/korean_style_hooks.py` 로 등록) |
 
 레포 밖에서 따로 설치해 쓰는 플러그인·스킬은 [docs/external.md](docs/external.md).
 
@@ -50,6 +53,19 @@ git config core.hooksPath .githooks   # 커밋 전 공개 검사 켜기 (처음 
 
 - 같은 이름의 폴더가 이미 있으면(예: 예전에 직접 넣은 스킬) 건너뛰고 「충돌」로 알려 준다. 옮겨도 되면 `--backup-existing`을 붙이면 원래 것을 `~/.omj/backups/<시각>/`으로 옮기고 링크를 건다(배포 자리 안에 백업을 두면 같은 이름 스킬이 둘로 잡혀서 밖에 둔다).
 - 기기마다 다른 것은 `config.local.toml`에 적는다. 예: 회사 맥에서만 `work-report`를 켠다.
+
+### 한국어 문체 지침을 Codex 에도 넣기
+
+Claude Code 는 `sync.py --apply` 로 연결한 `~/.claude/rules/korean-style*.md` 를 읽는다(일반 하위 에이전트도 받는다). Codex 는 그 폴더를 모르니 훅으로 넣는다.
+
+```bash
+python3 tools/korean_style_hooks.py            # 미리보기
+python3 tools/korean_style_hooks.py --apply    # Codex hooks.json 에 SessionStart · SubagentStart 훅 등록
+```
+
+- 등록한 뒤 Codex 를 열어 `/hooks` 에서 새 훅을 신뢰(Trust)해야 돈다. 신뢰하지 않은 훅은 `codex exec` 에서도 건너뛴다.
+- 지침 본문만 고치면 훅 정의는 그대로라 다시 신뢰하지 않아도 된다.
+- 빼려면 `--remove --apply`.
 
 ## 공유 위키를 여러 맥에서 쓰기
 
@@ -72,4 +88,4 @@ python3 tools/wiki_hooks.py --apply                                  # Claude se
 
 ## 라이선스
 
-MIT
+MIT. 다만 `rules/korean-style-toss.md` 는 토스 테크니컬 라이팅 가이드를 옮긴 것이라 CC BY-NC-SA 4.0 이다. 고쳐 쓴 다른 사람의 자료와 그 라이선스는 [docs/third-party-licenses.md](docs/third-party-licenses.md)에 있다.
