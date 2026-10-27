@@ -318,6 +318,28 @@ class GuardTests(unittest.TestCase):
                               result("t1", type="update", content=old_dash + "\n새 줄\n", structuredPatch=patch, originalFile=None)])
         self.assertEqual(out, {})
 
+    def test_codex_same_block_in_prose_and_code(self):
+        doc = self.dir / "doc.md"
+        line = "x %s y" % DASH
+        doc.write_text("%s\n```\n%s\n```\n" % (line, line), encoding="utf-8")     # 본문의 줄은 원래 있던 글
+        patch = "*** Begin Patch\n*** Update File: %s\n@@\n-옛 코드\n+%s\n*** End Patch" % (doc, line)
+        out = self.run_guard([codex_meta(), codex_turn(), codex_exec("text(await tools.apply_patch(%s))" % js_string(patch))])
+        self.assertEqual(out, {})
+
+    def test_line_added_then_deleted_in_same_turn(self):
+        doc = self.dir / "doc.md"
+        doc.write_text("제목\n", encoding="utf-8")
+        bad = "\n덧붙인 %s 줄" % DASH
+        no_results = [prompt("고쳐"), tool("Edit", file_path=str(doc), old_string="제목", new_string="제목" + bad),
+                      tool("Edit", file_path=str(doc), old_string=bad, new_string="")]
+        self.assertEqual(self.run_guard(no_results), {})
+        with_results = [prompt("고쳐"),
+                        tool("Edit", "t1", file_path=str(doc), old_string="제목", new_string="제목" + bad),
+                        result("t1", originalFile="제목\n", structuredPatch=[]),
+                        tool("Edit", "t2", file_path=str(doc), old_string=bad, new_string=""),
+                        result("t2", originalFile="제목" + bad + "\n", structuredPatch=[])]
+        self.assertEqual(self.run_guard(with_results, session="s2"), {})
+
 
 if __name__ == "__main__":
     unittest.main()

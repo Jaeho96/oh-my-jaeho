@@ -234,9 +234,10 @@ def claude_pieces(lines):
                 res = results.get(item.get("id")) or {}
                 if name == "Write":
                     yield n, "write", path, inp.get("content") or "", cwd, {"tool": "Write", "result": res}
-                elif name == "Edit" and inp.get("new_string"):
-                    edits = [(inp.get("old_string") or "", inp["new_string"], bool(inp.get("replace_all")))]
-                    yield n, "edit", path, inp["new_string"], cwd, {"tool": "Edit", "result": res, "edits": edits}
+                elif name == "Edit" and inp.get("old_string"):           # 새 글이 비어도(지우기) 되돌리기에 쓴다
+                    new = inp.get("new_string") or ""
+                    edits = [(inp["old_string"], new, bool(inp.get("replace_all")))]
+                    yield n, "edit", path, new, cwd, {"tool": "Edit", "result": res, "edits": edits}
                 elif name == "MultiEdit":
                     edits = [(e.get("old_string") or "", e.get("new_string") or "", bool(e.get("replace_all")))
                              for e in inp.get("edits") or [] if isinstance(e, dict)]
@@ -423,9 +424,14 @@ def net_spans(base, final):
     return spans
 
 
+def ink(s):
+    """지워지지 않고 남은 글자 수. 자리를 못 정할 때 가장 많이 지워진(코드 안) 자리를 골라 오탐을 피하는 데 쓴다."""
+    return len(re.sub(r"\s", "", s))
+
+
 def reverse_hunks(content, hunks, hints=None):
     """덩어리(문맥 · 뺀 · 더한 줄)를 거꾸로 적용해 수정 전 글을 만든다. 덩어리를 못 찾으면 None.
-    같은 덩어리가 여러 자리에 있으면 줄 번호 힌트에 가장 가까운 자리(없으면 첫 자리)."""
+    같은 덩어리가 여러 자리에 있으면 줄 번호 힌트에 가장 가까운 자리, 힌트가 없으면 더한 줄이 가장 많이 지워진 자리."""
     lines = content.split("\n")
     for k in range(len(hunks) - 1, -1, -1):
         hunk = [l for l in hunks[k] if l[:1] in (" ", "-", "+")]
@@ -438,7 +444,14 @@ def reverse_hunks(content, hunks, hints=None):
         if not starts:
             return None
         hint = hints[k] if hints and k < len(hints) else None
-        s = min(starts, key=lambda x: abs(x - hint)) if hint is not None else starts[0]
+        if hint is not None:
+            s = min(starts, key=lambda x: abs(x - hint))
+        elif len(starts) == 1:
+            s = starts[0]
+        else:
+            masked = mask("\n".join(lines)).split("\n")
+            added = [i for i, l in enumerate(l for l in hunk if l[:1] in (" ", "+")) if l.startswith("+")]
+            s = min(starts, key=lambda x: ink("".join(masked[x + i] for i in added)))
         lines[s:s + len(new)] = old
     return "\n".join(lines)
 
@@ -471,9 +484,18 @@ def turn_base(ops, final):
             content = reverse_patch(content, res["structuredPatch"])
         else:
             for old, new, every in reversed(extra.get("edits") or []):
-                if new not in content:
-                    return None
-                content = content.replace(new, old) if every else content.replace(new, old, 1)
+                if not new or new not in content:
+                    return None             # 지우기만 한 수정은 자리를 모른다
+                if every:
+                    content = content.replace(new, old)
+                    continue
+                spots, i = [], content.find(new)
+                while i >= 0:
+                    spots.append(i)
+                    i = content.find(new, i + 1)
+                masked = mask(content) if len(spots) > 1 else None
+                at = min(spots, key=lambda x: ink(masked[x:x + len(new)])) if masked else spots[0]
+                content = content[:at] + old + content[at + len(new):]
         if content is None:
             return None
     return content
@@ -490,10 +512,12 @@ def file_targets(path, ops):
         if not spans:
             return []
         return [(keep(mask(final), spans) if path.endswith(".md") else None, keep(final, spans))]
-    out = []                            # 되돌리지 못하면 수정마다 새 글의 달라진 범위만 본다(파일 문맥 없이)
+    out = []                            # 되돌리지 못하면 수정마다 새 글의 달라진 범위만 본다. 지금 파일에 남은 글만
     for kind, text, extra in ops:
         pairs = extra.get("edits") or [(None, text, False)]
         for old, new, _ in pairs:
+            if not new or new not in final:
+                continue
             spans = changed_spans(old, new) if old else None
             out.append((keep(mask(new), spans) if path.endswith(".md") else None, keep(new, spans)))
     return out
