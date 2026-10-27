@@ -181,10 +181,11 @@ def commit_messages(cmd, cwd=None):
 
 
 def claude_results(lines):
-    """도구 결과(toolUseResult)를 tool_use_id 로 묶는다. Edit 결과에는 수정 직전 파일(originalFile)과 바뀐 줄(structuredPatch)이 있다."""
+    """도구 결과를 tool_use_id 로 묶는다. Edit 결과에는 수정 직전 파일(originalFile)과 바뀐 줄(structuredPatch)이 있다.
+    실패한 도구(is_error)는 {"error": True} 로 적는다. 그때 toolUseResult 는 오류 문자열이다."""
     out = {}
     for line in lines:
-        if '"toolUseResult"' not in line:
+        if '"tool_use_id"' not in line:
             continue
         try:
             d = json.loads(line)
@@ -192,10 +193,15 @@ def claude_results(lines):
             continue
         res = d.get("toolUseResult")
         content = (d.get("message") or {}).get("content")
-        if isinstance(res, dict) and isinstance(content, list):
-            for c in content:
-                if isinstance(c, dict) and c.get("tool_use_id"):
-                    out[c["tool_use_id"]] = res
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if not isinstance(c, dict) or not c.get("tool_use_id"):
+                continue
+            if c.get("is_error"):
+                out[c["tool_use_id"]] = {"error": True}
+            elif isinstance(res, dict):
+                out[c["tool_use_id"]] = res
     return out
 
 
@@ -232,6 +238,8 @@ def claude_pieces(lines):
                 name, inp = item.get("name", ""), item.get("input") or {}
                 path = inp.get("file_path", "")
                 res = results.get(item.get("id")) or {}
+                if res.get("error") and name in EDIT_TOOLS:
+                    continue                # 실패한 Write · Edit 는 파일을 바꾸지 않았다
                 if name == "Write":
                     yield n, "write", path, inp.get("content") or "", cwd, {"tool": "Write", "result": res}
                 elif name == "Edit" and inp.get("old_string"):           # 새 글이 비어도(지우기) 되돌리기에 쓴다

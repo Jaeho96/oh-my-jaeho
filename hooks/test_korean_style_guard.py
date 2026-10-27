@@ -33,6 +33,13 @@ def result(tool_id, **res):
             "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": "ok"}]}}
 
 
+def failed(tool_id, error="Error: File has not been read yet."):
+    """실패한 도구의 결과 줄. toolUseResult 는 오류 문자열이고 tool_result 에 is_error 가 붙는다."""
+    return {"type": "user", "toolUseResult": error,
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id,
+                                                     "content": error, "is_error": True}]}}
+
+
 def js_string(text):
     return '"%s"' % text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
@@ -433,6 +440,15 @@ class GuardTests(unittest.TestCase):
         doc.write_text(final, encoding="utf-8")
         out = self.run_guard([prompt("줄 정리"), tool("Edit", "e", file_path=str(doc), old_string="x", new_string="y"),
                               result("e", originalFile=orig)])
+        self.assertEqual(out, {})
+
+    def test_failed_write_or_edit_changes_nothing(self):
+        doc = self.dir / "doc.md"
+        doc.write_text("기존 %s 글\n" % DASH, encoding="utf-8")       # 원래 있던 위반
+        out = self.run_guard([prompt("써"), tool("Write", "w", file_path=str(doc), content="새 글\n"), failed("w")])
+        self.assertEqual(out, {})
+        out = self.run_guard([prompt("고쳐"), tool("Edit", "e", file_path=str(doc), old_string="없는 글", new_string="기존 %s 글" % DASH),
+                              failed("e", "String to replace not found in file.")], session="s2")
         self.assertEqual(out, {})
 
 
