@@ -22,7 +22,12 @@ TYPING, READING, THINKING, TEAM, WAITING, IDLE, DONE, STALLED, PERMISSION, ERROR
 
 READ_COMMANDS = {"cat", "rg", "grep", "sed", "ls", "head", "tail", "find", "wc", "less", "awk", "jq", "stat", "file",
                  "tree", "pwd", "nl", "sort", "uniq", "diff", "which", "du", "df", "date", "echo", "printf", "realpath"}
-GIT_READ = {"log", "diff", "show", "status", "blame", "grep", "ls-files", "rev-parse", "branch"}
+GIT_READ = {"log", "diff", "show", "status", "blame", "grep", "ls-files", "rev-parse"}
+GIT_BRANCH_WRITE = {"-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy", "-f", "--force", "-u",
+                    "--set-upstream-to", "--unset-upstream", "--edit-description"}
+FIND_WRITE = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"}
+ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")          # 앞에 붙은 VAR=값 은 값까지 버린다(비밀이 섞일 수 있다)
+WRAPPERS = {"sudo", "env", "time", "-lc", "/bin/zsh", "/bin/bash", "zsh", "bash"}
 CLAUDE_READ_TOOLS = {"Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "NotebookRead", "ToolSearch",
                      "ListMcpResourcesTool", "ReadMcpResourceTool", "TaskList", "TaskGet"}
 CLAUDE_TEAM_TOOLS = {"Agent", "Task", "SendMessage", "Workflow"}
@@ -31,6 +36,7 @@ CODEX_TEAM_TOOLS = {"spawn_agent", "wait_agent", "wait", "send_message", "follow
 MCP_READ_HINT = re.compile(r"(read|search|get|list|fetch|query|find|snapshot|describe)", re.I)
 CODEX_CMD = re.compile(r'(?:\bcmd\s*:\s*|"cmd"\s*:\s*|"command"\s*:\s*\[?\s*)"((?:[^"\\]|\\.)*)"')
 
+FULL_SCAN_SEC = 60          # 지난 날짜 폴더까지 훑는 간격(초)
 CLAUDE_WINDOW = 200_000
 CLAUDE_WIDE_WINDOW = 1_000_000
 
@@ -55,19 +61,34 @@ def short_path(p):
 
 # ---------- 명령·도구 분류 ----------
 
+def command_words(cmd):
+    """명령에서 실제로 도는 첫 명령의 낱말들. `cd x &&` 같은 앞 단계와 VAR=값 · 감싸는 명령은 건너뛴다."""
+    for seg in re.split(r"&&|\|\||[;|\n]", cmd or ""):
+        words = [w for w in re.findall(r"[^\s()&]+", seg) if not ASSIGN.match(w) and w not in WRAPPERS]
+        if words and words[0] not in ("cd", "pushd", "popd"):
+            return words
+    return []
+
+
 def classify_command(cmd):
     """셸 명령 → (mode, 보여 줄 말). 명령 전체는 싣지 않는다(비밀이 섞일 수 있다)."""
-    words = re.findall(r"[^\s|;&()]+", cmd or "")
-    words = [w for w in words if not re.match(r"^[A-Z_]+=", w) and w not in ("cd", "sudo", "env", "time", "-lc", "/bin/zsh", "/bin/bash", "zsh", "bash")]
+    words = command_words(cmd)
     if not words:
         return TYPING, "명령 실행"
     prog = os.path.basename(words[0].strip("'\""))
     if prog == "git" and len(words) > 1:
         sub = words[1]
-        return (READING if sub in GIT_READ else TYPING), "git %s" % sub
+        rest = words[2:]
+        if sub == "branch":       # 목록만 볼 때 읽기. 이름을 주거나(-d · -m 등) 바꾸면 쓰기
+            reading = all(w.startswith("-") and w not in GIT_BRANCH_WRITE for w in rest)
+        else:
+            reading = sub in GIT_READ
+        return (READING if reading else TYPING), "git %s" % sub
     if prog in READ_COMMANDS:
-        if prog == "sed" and "-i" in words:
+        if prog == "sed" and any(re.match(r"^-[A-Za-z]*i", w) or w.startswith("--in-place") for w in words[1:]):
             return TYPING, "sed -i"
+        if prog == "find" and any(w in FIND_WRITE for w in words[1:]):
+            return TYPING, "find"
         return READING, prog
     return TYPING, prog
 
@@ -381,7 +402,7 @@ class AgentTrack:
             "role": self.role, "nickname": self.nickname, "title": self.title, "cwd": short_path(self.cwd),
             "model": self.model, "effort": self.effort, "status": st, "statusChangedAt": iso(self.status_changed_at), "activity": activity,
             "context": ctx, "tokens": {"total": self.tokens_total, "output": self.tokens_output} if self.tokens_total else None,
-            "lastMessage": self.last_message if self.provider == "codex" else None,
+            "lastMessage": self.last_message if self.provider == "codex" and self.kind == "subagent" else None,
             "startedAt": iso(self.first_ts), "lastEventAt": iso(self.last_ts), "errors": self.errors,
         }
 
@@ -397,6 +418,8 @@ class Registry:
         self.active_sec = active_min * 60
         self.stall_sec = stall_sec
         self.files = {}      # path → (reader, track, provider)
+        self.errors = {}     # path → 마지막으로 이 파일을 못 읽은 이유(다른 파일은 계속 읽는다)
+        self._scanned_at = None
 
     def _day_dirs(self, now):
         out, d = [], datetime.fromtimestamp(now - self.active_sec - 86400, KST).date()
@@ -408,9 +431,16 @@ class Registry:
 
     def discover(self, now):
         found = []
+        codex = set()
         for dd in self._day_dirs(now):
-            for f in glob.glob(os.path.join(dd, "rollout-*.jsonl")):
-                found.append((f, "codex", None, None))
+            codex.update(glob.glob(os.path.join(dd, "rollout-*.jsonl")))
+        # 기록은 시작한 날 폴더에 쌓인다. 며칠 전에 시작해 지금도 쓰는 세션은 위 폴더에 없으니 가끔 전체를 훑는다
+        if self._scanned_at is None or now - self._scanned_at >= FULL_SCAN_SEC:
+            self._scanned_at = now
+            codex.update(glob.glob(os.path.join(self.codex_root, "*", "*", "*", "rollout-*.jsonl")))
+        codex.update(p for p, (_, _, prov) in self.files.items() if prov == "codex")    # 이미 보는 파일은 계속 본다
+        for f in sorted(codex):
+            found.append((f, "codex", None, None))
         for f in glob.glob(os.path.join(self.claude_root, "*", "*.jsonl")):
             found.append((f, "claude", None, None))
             sub = os.path.join(f[:-6], "subagents")
@@ -428,8 +458,10 @@ class Registry:
 
     def _new_track(self, path, provider, parent, meta_path):
         if provider == "codex":
-            first = first_json_line(path) or {}
-            agent_id = ((first.get("payload") or {}).get("id")) or os.path.basename(path)
+            first = first_json_line(path)
+            first = first if isinstance(first, dict) else {}
+            head = first.get("payload") if isinstance(first.get("payload"), dict) else {}
+            agent_id = head.get("id") or os.path.basename(path)
             track = AgentTrack(agent_id, "codex")
             track.apply(parse_codex_line(first), ts_of(first.get("timestamp")))   # 머리 줄은 늘 읽는다(부모·역할)
             return track
@@ -442,6 +474,7 @@ class Registry:
                     meta = json.load(f)
             except (OSError, ValueError):
                 pass
+            meta = meta if isinstance(meta, dict) else {}
             track.role = meta.get("agentType")
             track.title, track.title_weak = (meta.get("description") or "")[:60] or None, False
             track.completed = bool(meta.get("finished"))
@@ -450,27 +483,40 @@ class Registry:
     def refresh(self, now=None):
         now = now or time.time()
         for path, provider, parent, meta_path in self.discover(now):
-            if path not in self.files:
-                self.files[path] = (TailReader(path), self._new_track(path, provider, parent, meta_path), provider)
-            reader, track, prov = self.files[path]
-            parse = parse_codex_line if prov == "codex" else parse_claude_line
-            for d in reader.read_new():
-                track.apply(parse(d), ts_of(d.get("timestamp")) if isinstance(d, dict) else None)
-            if prov == "claude" and track.kind == "subagent" and meta_path:
-                try:
-                    with open(meta_path, encoding="utf-8") as f:
-                        if json.load(f).get("finished"):
-                            track.completed = True
-                except (OSError, ValueError):
-                    pass
-            if track.last_ts is None:
-                try:
-                    track.last_ts = os.path.getmtime(path)
-                except OSError:
-                    pass
+            try:
+                self._refresh_one(path, provider, parent, meta_path)
+                self.errors.pop(path, None)
+            except Exception as e:      # 깨진 기록 하나 때문에 사무실 전체가 멈추지 않게 한다
+                self.errors[path] = "%s: %s" % (type(e).__name__, e)
         # 오래 조용한 파일은 잊는다(다시 바뀌면 처음부터 읽는다)
         for path in [p for p, (_, t, _) in self.files.items() if t.last_ts and now - t.last_ts > self.active_sec * 3]:
             del self.files[path]
+
+    def _refresh_one(self, path, provider, parent, meta_path):
+        if path not in self.files:
+            self.files[path] = (TailReader(path), self._new_track(path, provider, parent, meta_path), provider)
+        reader, track, prov = self.files[path]
+        parse = parse_codex_line if prov == "codex" else parse_claude_line
+        for d in reader.read_new():
+            if not isinstance(d, dict):
+                continue
+            try:
+                track.apply(parse(d), ts_of(d.get("timestamp")))
+            except Exception:           # 모양이 다른 줄 하나는 건너뛴다
+                continue
+        if prov == "claude" and track.kind == "subagent" and meta_path:
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    m = json.load(f)
+                if isinstance(m, dict) and m.get("finished"):
+                    track.completed = True
+            except (OSError, ValueError):
+                pass
+        if track.last_ts is None:
+            try:
+                track.last_ts = os.path.getmtime(path)
+            except OSError:
+                pass
 
     def tracks(self):
         return [t for _, t, _ in self.files.values()]
@@ -524,7 +570,8 @@ def build_office(registry, now, sessions=None, runs=None, local_label="이 맥",
     rooms = [{"id": "local", "label": local_label, "teams": teams, "hidden": hidden, "error": None}]
 
     for label, agents in (sessions.get("remote") or {}).items():
-        room = {"id": "remote:" + label, "label": label, "teams": [], "hidden": 0, "error": None}
+        room = {"id": "remote:" + label, "label": label, "teams": [], "hidden": 0,
+                "error": (sessions.get("remote_errors") or {}).get(label)}    # 실패해도 마지막 목록은 그린다
         if isinstance(agents, dict):
             room["error"] = agents.get("error")
         else:

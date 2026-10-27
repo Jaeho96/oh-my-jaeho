@@ -46,11 +46,12 @@ python3 agent-team/run_team.py --name review-x --cwd <폴더> --mode team --task
 ## 보드가 읽는 것과 한계
 
 - 팀 트리는 Codex 세션 기록(`~/.codex/sessions/**/rollout-*.jsonl`)에서 만든다. `codex exec --json` 이벤트에는 하위 에이전트를 띄운 사실이 나오지 않는다(0.163 확인: spawn_agent 3번이 이벤트에는 `wait` 한 번만 보였다).
-- `exec` 이벤트는 0.163 에서 확인한 이름만 안다: `thread.started` · `turn.started` · `turn.completed` · `turn.failed` · `item.*` · `error`. 모르는 이름은 보드에 「모르는 이벤트」로 띄운다.
+- `exec` 이벤트는 0.163 에서 확인한 이름만 안다: `thread.started` · `turn.started` · `turn.completed` · `turn.failed` · `item.started` · `item.updated` · `item.completed` · `error`. 이 밖의 이름은(앞부분이 같아도) 보드에 「모르는 이벤트」로 띄운다.
 - 「그 밖의 Codex 스레드」는 `codex app-server`(stdio)를 따로 띄워 `thread/list` 로 읽는다. `sourceKinds` 를 비우면 대화형만 오므로 10가지를 모두 적는다. 보드는 파일을 쓰지 않지만, 띄운 app-server 는 Codex 상태 DB 를 스스로 갱신할 수 있다.
 - 돌고 있는 app-server 데몬에 직접 붙는 길(`codex app-server proxy`·control socket)은 핸드셰이크가 달라 아직 안 된다.
-- 사무실은 최근 `--office-min`(기본 60)분 안에 움직인 세션만 앉힌다. 일하는 중인데 `--stall-sec`(기본 600)초 소식이 없으면 「멈춤 의심」, herdr 가 승인·질문 화면이라고 알리면 「승인 기다림」이다.
-- 대화 내용은 화면에 싣지 않는다. 도구 이름·파일 이름·명령 첫 단어·Bash 설명만 쓴다. Codex 하위 에이전트의 보고문만 예외다.
+- 사무실은 최근 `--office-min`(기본 60)분 안에 움직인 세션만 앉힌다. 며칠 전에 시작해 지금도 쓰는 세션도 1분마다 전체 기록 폴더를 훑어 찾는다. 깨진 기록 파일 하나는 건너뛰고 나머지를 그린다. 일하는 중인데 `--stall-sec`(기본 600)초 소식이 없으면 「멈춤 의심」, herdr 가 승인·질문 화면이라고 알리면 「승인 기다림」이다.
+- 대화 내용은 화면에 싣지 않는다. 도구 이름·파일 이름·명령 첫 단어·Bash 설명만 쓴다. 예외는 둘이다: 세션 이름으로 쓰는 사용자 지시 첫 줄(60자까지)과 Codex 하위 에이전트의 보고문. 명령 앞에 붙은 `VAR=값` 은 값째 버린다.
+- herdr 가 실패하면 세션 목록은 마지막 성공값을 그대로 두고 오류만 적는다(원격 기기도 기기마다 같다).
 - 데이터 길(`/api/state`·SSE `/events`)은 토큰이 있어야 열린다. 보드는 127.0.0.1 에만 묶고, 다른 주소는 `--allow-remote` 를 함께 줘야 한다.
 
 ## 원칙 (OpenAI DevDay Seoul 2026 「What Comes After Loops?」에서)

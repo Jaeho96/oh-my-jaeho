@@ -191,3 +191,63 @@ class StatusChangedAtTests(unittest.TestCase):
         track.apply([('turn_start', {})], 1000)
         self.assertEqual(track.snapshot(1700, 600)['statusChangedAt'], office.iso(1600))
         self.assertEqual(track.snapshot(1800, 600)['statusChangedAt'], office.iso(1600))
+
+
+class ReviewFixTests(Fixture):
+    """2026-10-26 결함 검토에서 확인한 것들."""
+
+    def test_assignment_value_never_becomes_label(self):
+        # 소문자 · 숫자가 섞인 변수 이름도 값까지 버린다(전에는 이름표가 'API_TOKEN2=secret-value' 였다)
+        mode, label = office.classify_command("API_TOKEN2=secret-value curl https://x")
+        self.assertEqual((mode, label), (office.TYPING, "curl"))
+        self.assertNotIn("secret", office.classify_command("myKey_1=s3cret rg x")[1])
+
+    def test_cd_prefix_and_write_like_flags(self):
+        c = office.classify_command
+        self.assertEqual(c("cd /repo && rg x"), (office.READING, "rg"))
+        self.assertEqual(c("git branch"), (office.READING, "git branch"))
+        self.assertEqual(c("git branch -a --list"), (office.READING, "git branch"))
+        self.assertEqual(c("git branch -D work"), (office.TYPING, "git branch"))
+        self.assertEqual(c("git branch new-name"), (office.TYPING, "git branch"))
+        self.assertEqual(c("sed -i.bak s/a/b/ f"), (office.TYPING, "sed -i"))
+        self.assertEqual(c("find . -name '*.pyc' -delete"), (office.TYPING, "find"))
+        self.assertEqual(c("find . -name '*.py'"), (office.READING, "find"))
+
+    def test_lead_final_message_is_not_shown(self):
+        # README: 대화 내용은 싣지 않고 Codex 하위 에이전트 보고문만 예외다
+        self.codex_team()
+        with open(self.day / "rollout-a-M.jsonl", "a") as f:
+            f.write(json.dumps({"timestamp": stamp(4), "type": "event_msg",
+                                "payload": {"type": "task_complete", "last_agent_message": "리더 최종 답변"}}) + "\n")
+        with open(self.day / "rollout-b-C.jsonl", "a") as f:
+            f.write(json.dumps({"timestamp": stamp(5), "type": "event_msg",
+                                "payload": {"type": "task_complete", "last_agent_message": "하위 보고"}}) + "\n")
+        team = office.build_office(self.registry(), NOW, local_label="L")["rooms"][0]["teams"][0]
+        self.assertIsNone(team["lead"]["lastMessage"])
+        self.assertEqual(team["members"][0]["lastMessage"], "하위 보고")
+
+    def test_one_bad_file_does_not_stop_the_office(self):
+        self.codex_team()
+        (self.day / "rollout-z-bad.jsonl").write_text('{"type":"session_meta","payload":["bad"]}\n"str"\n')
+        (self.day / "rollout-y-str.jsonl").write_text('"just a string"\n')
+        reg = self.registry()
+        o = office.build_office(reg, NOW, local_label="L")
+        ids = [t["lead"]["id"] for t in o["rooms"][0]["teams"]]
+        self.assertIn("M", ids)                                          # 멀쩡한 팀은 그대로 보인다
+
+    def test_session_started_days_ago_is_found(self):
+        old = self.codex / datetime.fromtimestamp(NOW - 3 * 86400).strftime("%Y/%m/%d")
+        self.write(old / "rollout-old-O.jsonl", [
+            {"timestamp": stamp(3 * 86400), "type": "session_meta", "payload": {"id": "O", "source": "cli", "cwd": "/w/old"}},
+            {"timestamp": stamp(30), "type": "event_msg", "payload": {"type": "task_started"}},
+        ])
+        os.utime(old / "rollout-old-O.jsonl", (NOW - 30, NOW - 30))       # 지금도 쓰고 있다
+        o = office.build_office(self.registry(), NOW, local_label="L")
+        self.assertIn("O", [t["lead"]["id"] for t in o["rooms"][0]["teams"]])
+
+    def test_remote_room_keeps_last_list_and_shows_error(self):
+        sessions = {"local": [], "remote": {"M": [{"pane": "r1", "agent": "codex", "status": "idle"}]},
+                    "remote_errors": {"M": "연결 실패"}}
+        o = office.build_office(self.registry(), NOW, sessions=sessions, local_label="L")
+        room = next(r for r in o["rooms"] if r["label"] == "M")
+        self.assertEqual((len(room["teams"]), room["error"]), (1, "연결 실패"))

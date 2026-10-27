@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import uuid
@@ -80,15 +81,40 @@ def read_json(path):
         return json.load(f)
 
 
+def stop_group(proc, grace=15):
+    """proc 이 이끄는 프로세스 그룹 전체에 TERM, grace 초 뒤에도 남으면 KILL."""
+    def send(sig):
+        try:
+            os.killpg(proc.pid, sig)
+        except OSError:
+            pass
+    send(signal.SIGTERM)
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        send(signal.SIGKILL)
+        proc.wait()
+    send(signal.SIGKILL)                # codex 는 끝났는데 남은 자손이 있으면 정리한다
+
+
 def supervise(base):
     """명령을 실행하고 끝까지 기다려 결과를 .meta.json 에 남긴다. 포그라운드·백그라운드 둘 다 이 길로 간다."""
-    spec = read_json(base + ".cmd.json")
-    meta = read_json(base + ".meta.json")
+    try:
+        spec, meta = read_json(base + ".cmd.json"), read_json(base + ".meta.json")
+        if not isinstance(spec, dict) or not isinstance(meta, dict):
+            raise ValueError("JSON 객체가 아니다")
+    except (OSError, ValueError) as e:
+        print("실행 기록을 읽지 못했다(%s): %s" % (base, e), file=sys.stderr)
+        return 1
 
     def finish(**kw):
         meta.update(kw)
         meta["finished"] = now_iso()
         write_private(base + ".meta.json", meta)
+        try:
+            os.chmod(base + ".last.md", 0o600)      # 이 파일은 codex 가 만든다(-o). 다른 기록처럼 0600 으로 맞춘다
+        except OSError:
+            pass
 
     try:
         out, err = open_private(base + ".jsonl"), open_private(base + ".err")
@@ -97,7 +123,9 @@ def supervise(base):
         return 1
     with out, err:
         try:
-            proc = subprocess.Popen(spec["cmd"], stdout=out, stderr=err, stdin=subprocess.DEVNULL, cwd=spec["cwd"])
+            # 새 프로세스 그룹으로 띄워, 멈출 때 codex 가 띄운 MCP · 명령까지 함께 멈춘다
+            proc = subprocess.Popen(spec["cmd"], stdout=out, stderr=err, stdin=subprocess.DEVNULL, cwd=spec["cwd"],
+                                    start_new_session=True)
         except OSError as e:
             finish(exit_code=None, error="시작 실패: %s" % e)
             return 127
@@ -108,14 +136,13 @@ def supervise(base):
         try:
             code = proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+            stop_group(proc)
             finish(exit_code=proc.returncode, timed_out=True, error="제한 시간 %s초 초과로 멈춤" % timeout)
             return 124
+        except KeyboardInterrupt:       # 새 그룹이라 터미널의 Ctrl-C 가 codex 에 가지 않는다 — 직접 멈춘다
+            stop_group(proc)
+            finish(exit_code=proc.returncode, error="사용자가 멈춤")
+            return 130
     finish(exit_code=code)
     return code
 
@@ -146,7 +173,7 @@ def main():
 
     if not args.task and not args.task_file:
         ap.error("--task 또는 --task-file 이 필요하다")
-    if not NAME_RE.match(args.name):
+    if not NAME_RE.fullmatch(args.name):
         ap.error("--name 은 영문·숫자·한글·._- 만, 60자까지 (경로 구분자 금지)")
     if args.add_dir and not args.write:
         ap.error("--add-dir 은 --write 와 함께 쓴다")

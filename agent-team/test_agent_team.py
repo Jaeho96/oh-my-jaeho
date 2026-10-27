@@ -15,6 +15,17 @@ import board  # noqa: E402
 
 FAKE_CODEX = """#!/bin/sh
 # 가짜 codex: exec 이면 이벤트 몇 줄을 찍고 끝난다. app-server 면 아무 답도 하지 않고 기다린다.
+# -o 파일이 있으면 진짜 codex 처럼 마지막 메시지를 쓴다(umask 그대로). FAKE_HANG=1 이면 자손을 하나 띄우고 멈춰 있다.
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-o" ]; then echo "끝" > "$a"; fi
+  prev="$a"
+done
+if [ "$FAKE_HANG" = "1" ]; then
+  sleep 60 &
+  echo $! > "$FAKE_PIDFILE"
+  sleep 60
+fi
 if [ "$1" = "exec" ]; then
   echo '{"type":"thread.started","thread_id":"t-1"}'
   echo '{"type":"turn.started"}'
@@ -253,6 +264,87 @@ class ResultHeadTests(unittest.TestCase):
         self.assertEqual(board.result_head("`run_team` 옵션을 붙였다"), "run_team 옵션을 붙였다")
         self.assertEqual(board.result_head("2026.10.23 회의 결과"), "2026.10.23 회의 결과")
         self.assertEqual(board.result_head("> - **결론** ~~옛말~~ 새말"), "결론 옛말 새말")
+
+
+class ReviewFixTests(Base):
+    """2026-10-26 결함 검토에서 확인한 것들."""
+
+    def fake_herdr(self, replies):
+        orig = board.run_cmd
+        self.addCleanup(setattr, board, "run_cmd", orig)
+        it = iter(replies)
+        board.run_cmd = lambda args, timeout=10: next(it)
+
+    def test_herdr_non_object_json_is_not_a_crash(self):
+        self.fake_herdr([(0, "[]", ""), (0, "null", "")])
+        out = board.collect_herdr([("m", "M")], "L")
+        self.assertEqual(out["local"], [])
+        self.assertIn("응답 모양", out["error"])
+        self.assertIn("M", out["remote_errors"])
+
+    def test_malformed_herdr_reply_keeps_last_good_values(self):
+        # 모양이 틀린 응답을 「빈 목록」으로 받아 마지막 정상 목록을 지우면 안 된다
+        prev = {"local": [{"pane": "p1", "agent": "codex"}], "remote": {"M": [{"pane": "r1"}]}}
+        for local_reply, remote_reply in [("[]", "{}"), ('{"result": null}', '{"result": []}'),
+                                          ('{"result": {"snapshot": {}}}', '{"result": {"agents": null}}')]:
+            self.fake_herdr([(0, local_reply, ""), (0, remote_reply, "")])
+            out = board.collect_herdr([("m", "M")], "L", prev=prev)
+            self.assertEqual(out["local"], prev["local"], local_reply)
+            self.assertEqual(out["remote"]["M"], [{"pane": "r1"}], remote_reply)
+            self.assertTrue(out["error"] and out["remote_errors"]["M"])
+
+    def test_empty_agent_list_is_a_real_answer(self):
+        prev = {"local": [{"pane": "p1"}], "remote": {"M": [{"pane": "r1"}]}}
+        self.fake_herdr([(0, '{"result": {"snapshot": {"agents": []}}}', ""), (0, '{"result": {"agents": []}}', "")])
+        out = board.collect_herdr([("m", "M")], "L", prev=prev)
+        self.assertEqual((out["local"], out["remote"]["M"], out["error"]), ([], [], None))
+
+    def test_herdr_failure_keeps_last_good_values(self):
+        prev = {"local": [{"pane": "p1", "agent": "codex"}], "remote": {"M": [{"pane": "r1"}]}}
+        self.fake_herdr([(124, "", "timeout"), (1, "", "연결 실패")])
+        out = board.collect_herdr([("m", "M")], "L", prev=prev)
+        self.assertEqual(out["local"], prev["local"])
+        self.assertIn("timeout", out["error"])
+        self.assertEqual(out["remote"]["M"], [{"pane": "r1"}])
+        self.assertEqual(out["remote_errors"]["M"], "연결 실패")
+
+    def test_unknown_event_names_inside_known_prefixes(self):
+        p = self.dir / "u.jsonl"
+        p.write_text("\n".join(json.dumps({"type": t}) for t in ["turn.started", "turn.future_thing", "item.updated"]))
+        self.assertEqual(board.summarize_events(str(p))["unknown"], {"turn.future_thing": 1})
+
+    def test_timed_out_run_is_not_done(self):
+        self.assertEqual(board.run_state({"exit_code": 0, "timed_out": True}, {}), "error")
+
+    def test_timeout_stops_codex_descendants(self):
+        pidfile = self.dir / "child.pid"
+        env = dict(self.env, FAKE_HANG="1", FAKE_PIDFILE=str(pidfile))
+        p = self.run_team("--timeout", "2", env=env)
+        self.assertEqual(p.returncode, 124, p.stderr)
+        child = int(pidfile.read_text().strip())
+        deadline = time.time() + 5
+        while time.time() < deadline and board.pid_alive(child):
+            time.sleep(0.1)
+        self.assertFalse(board.pid_alive(child))                        # codex 가 띄운 자손도 멈췄다
+
+    def test_last_message_file_is_private(self):
+        p = self.run_team()
+        self.assertEqual(p.returncode, 0, p.stderr)
+        last = next(self.runs.glob("*.last.md"))
+        self.assertEqual(stat.S_IMODE(last.stat().st_mode), 0o600)
+
+    def test_supervise_with_missing_records_fails_cleanly(self):
+        p = subprocess.run([sys.executable, str(HERE / "run_team.py"), "--_supervise", str(self.dir / "nope")],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("실행 기록을 읽지 못했다", p.stderr)
+        self.assertNotIn("Traceback", p.stderr)
+
+    def test_name_with_trailing_newline_is_rejected(self):
+        args = [sys.executable, str(HERE / "run_team.py"), "--name", "ok\n", "--cwd", str(self.dir),
+                "--task", "x", "--runs", str(self.runs)]
+        p = subprocess.run(args, env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(p.returncode, 0)
 
 
 if __name__ == "__main__":

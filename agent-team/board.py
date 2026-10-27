@@ -104,28 +104,42 @@ def as_list(v):
 
 # ---------- 세션 (herdr) ----------
 
-def collect_herdr(machines, local_label):
-    """machines: [(herdr 머신 이름, 화면 이름)]. 화면에는 화면 이름을 쓴다."""
-    out = {"local": [], "local_label": local_label, "remote": {}, "error": None}
+def herdr_agents(text, *path):
+    """herdr JSON 에서 path 를 따라 agents 목록을 꺼낸다. 모양이 다르면 ValueError — 빈 목록과 구별한다."""
+    d = json.loads(text)
+    for key in path:
+        if not isinstance(d, dict):
+            raise ValueError("응답 모양이 다름(%s 앞이 객체가 아님)" % key)
+        d = d.get(key)
+    if not isinstance(d, list):
+        raise ValueError("응답에 agents 목록이 없음")
+    return d
+
+
+def collect_herdr(machines, local_label, prev=None):
+    """machines: [(herdr 머신 이름, 화면 이름)]. 화면에는 화면 이름을 쓴다.
+    한 곳이 실패하면 그곳은 prev(지난번 결과)의 마지막 성공값을 그대로 두고 오류만 적는다."""
+    prev = prev if isinstance(prev, dict) else {}
+    out = {"local": [], "local_label": local_label, "remote": {}, "remote_errors": {}, "error": None}
     code, so, se = run_cmd(["herdr", "api", "snapshot"], timeout=10)
-    if code == 0:
-        try:
-            snap = as_dict(as_dict(json.loads(so).get("result")).get("snapshot"))
-            out["local"] = [pick_agent(a) for a in as_list(snap.get("agents")) if isinstance(a, dict)]
-        except ValueError as e:
-            out["error"] = "snapshot 파싱 실패: %s" % e
-    else:
-        out["error"] = (se or so).strip()[:200] or "herdr 없음"
+    try:
+        if code != 0:
+            raise RuntimeError((se or so).strip()[:200] or "herdr 없음")
+        out["local"] = [pick_agent(a) for a in herdr_agents(so, "result", "snapshot", "agents") if isinstance(a, dict)]
+    except (RuntimeError, ValueError) as e:
+        out["local"] = [a for a in as_list(prev.get("local")) if isinstance(a, dict)]
+        out["error"] = "snapshot 실패: %s" % e
+    prev_remote = as_dict(prev.get("remote"))
     for m, label in machines:
         code, so, se = run_cmd(["herdr", "--machine", m, "agent", "list"], timeout=20)
-        if code == 0:
-            try:
-                agents = as_list(as_dict(json.loads(so).get("result")).get("agents"))
-                out["remote"][label] = [pick_agent(a) for a in agents if isinstance(a, dict)]
-            except ValueError as e:
-                out["remote"][label] = {"error": "파싱 실패: %s" % e}
-        else:
-            out["remote"][label] = {"error": (se or so).strip()[:200] or "연결 실패"}
+        try:
+            if code != 0:
+                raise RuntimeError((se or so).strip()[:200] or "연결 실패")
+            out["remote"][label] = [pick_agent(a) for a in herdr_agents(so, "result", "agents") if isinstance(a, dict)]
+        except (RuntimeError, ValueError) as e:
+            last = prev_remote.get(label)
+            out["remote"][label] = last if isinstance(last, list) else {"error": str(e)}
+            out["remote_errors"][label] = str(e)
     return out
 
 
@@ -518,6 +532,8 @@ def pid_alive(pid):
 
 def run_state(meta, r):
     """종료 코드가 있으면 그것이 기준. 없으면 프로세스 생존, 그다음 이벤트로 본다."""
+    if meta.get("timed_out"):
+        return "error"           # 제한 시간으로 멈췄으면 종료 코드가 0 이어도 끝난 것이 아니다
     if meta.get("exit_code") is not None:
         return "done" if meta["exit_code"] == 0 else "error"
     if meta.get("error"):
@@ -539,6 +555,8 @@ def run_state(meta, r):
 # 지원하는 `codex exec --json` 이벤트 (0.163 확인): thread.started · turn.started · turn.completed · turn.failed ·
 # item.started/updated/completed(item.type: agent_message · command_execution · reasoning · web_search · collab_tool_call …) · error
 TERMINAL_OK = ("turn.completed",)
+KNOWN_EVENTS = {"thread.started", "turn.started", "turn.completed", "turn.failed",
+                "item.started", "item.updated", "item.completed", "error"}
 TERMINAL_FAIL = ("turn.failed", "error")
 
 
@@ -566,7 +584,7 @@ def summarize_events(path):
             item = as_dict(ev.get("item"))
             itype = str(item.get("type") or "")
             kinds[etype + (":" + itype if itype else "")] += 1
-            if not (etype.startswith(("thread.", "turn.", "item.")) or etype == "error"):
+            if etype not in KNOWN_EVENTS:
                 unknown[etype] += 1
             thread_id = thread_id or ev.get("thread_id")
             if isinstance(ev.get("usage"), dict):
@@ -695,7 +713,8 @@ class State:
         r = self.args.refresh
         for name, fn, every in (("office", self.collect_office, 1),
                                 ("runs", self.collect_runs, r), ("threads", self.collect_threads, r * 2),
-                                ("sessions", lambda: collect_herdr(self.args.machines, self.args.local_label), r * 2),
+                                ("sessions", lambda: collect_herdr(self.args.machines, self.args.local_label,
+                                                                  prev=self.value("sessions")), r * 2),
                                 ("wiki", lambda: collect_wiki(os.path.join(self.args.wiki, "raw"), hours=self.args.hours), r * 3)):
             threading.Thread(target=self.loop, args=(name, fn, every), daemon=True).start()
 
@@ -798,7 +817,8 @@ def make_handler(state, token, dist):
             self._send(200, body, ctype)
 
         def _stream(self):
-            """SSE: 상태가 바뀔 때만 보낸다. 15초마다 주석 한 줄로 연결을 확인한다."""
+            """SSE: 상태가 바뀌면 보낸다. 사무실 값(generatedAt)이 매초 바뀌므로 실제로는 매초 간다.
+            화면은 이 값을 시계로 써서 「N초 전 수신」과 대기 시간을 센다. 15초 넘게 같으면 주석 한 줄로 연결을 확인한다."""
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
