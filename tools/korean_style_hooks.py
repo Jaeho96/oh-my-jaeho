@@ -8,7 +8,8 @@
 Claude Code 는 rules/korean-style*.md 를 ~/.claude/rules 링크로 읽으니(tools/sync.py) 여기서 다루지 않는다.
 Codex 에는 세션 시작(startup · clear · compact)과 하위 에이전트 시작에 hooks/korean_style_context.py 를 건다.
 훅의 표준 출력이 개발자 문맥으로 들어간다. 지침이 기본 한도(약 2,500토큰)보다 길어서 additionalContextLimit 을 준다.
-기존 훅은 건드리지 않고 우리 묶음만 더하거나 맞춘다. 우리 항목은 명령에 `/.claude/hooks/korean_style_` 가 든 것이다.
+우리 항목은 명령에 `/.claude/hooks/korean_style_` 가 든 훅이다. 묶음 단위가 아니라 훅 항목 단위로 우리 것만 빼고 더한다.
+같은 묶음에 다른 도구의 훅이 섞여 있어도 그 훅은 남는다.
 쓰기 전 원본은 ~/.omj/backups/<시각>/ 에 둔다. Codex 는 새 훅을 /hooks 에서 신뢰(Trust)해야 돌린다.
 훅 파일 자체(~/.claude/hooks/korean_style_context.py 링크)는 tools/sync.py 가 건다.
 """
@@ -30,29 +31,38 @@ WANT = {"SessionStart": {"matcher": "^(startup|clear|compact)$", "hooks": [HANDL
         "SubagentStart": {"hooks": [HANDLER]}}
 
 
-def ours(group):
-    return any(MARK in h.get("command", "") for h in group.get("hooks", []))
+def strip_ours(groups):
+    """묶음마다 우리 항목만 뺀다. 같은 묶음에 든 다른 훅은 그대로 두고, 우리 항목만 있던 묶음은 없앤다."""
+    rest, removed = [], 0
+    for g in groups:
+        handlers = g.get("hooks", [])
+        keep = [h for h in handlers if MARK not in h.get("command", "")]
+        removed += len(handlers) - len(keep)
+        if len(keep) == len(handlers):
+            rest.append(g)
+        elif keep:
+            rest.append(dict(g, hooks=keep))
+    return rest, removed
 
 
 def plan(data, remove):
     hooks = data.setdefault("hooks", {})
     notes = []
     for event, group in WANT.items():
-        groups = hooks.setdefault(event, [])
-        mine = [g for g in groups if ours(g)]
+        groups = hooks.get(event, [])
+        rest, removed = strip_ours(groups)
         if remove:
-            if mine:
-                hooks[event] = [g for g in groups if not ours(g)]
-                notes.append("%s: 문체 훅 묶음 %d개 뺌" % (event, len(mine)))
-            if not hooks[event]:
-                del hooks[event]
-        elif mine == [group]:
+            if removed:
+                if rest:
+                    hooks[event] = rest
+                else:
+                    del hooks[event]
+                notes.append("%s: 문체 훅 %d개 뺌" % (event, removed))
+        elif removed == 1 and group in groups:
             notes.append("%s: 이미 있음" % event)
         else:
-            rest = [g for g in groups if not ours(g)]
-            rest.append(json.loads(json.dumps(group)))
-            hooks[event] = rest
-            notes.append("%s: 문체 훅 묶음 %s" % (event, "맞춤" if mine else "추가"))
+            hooks[event] = rest + [json.loads(json.dumps(group))]
+            notes.append("%s: 문체 훅 묶음 %s" % (event, "맞춤" if removed else "추가"))
     return notes
 
 
