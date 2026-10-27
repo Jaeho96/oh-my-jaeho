@@ -461,45 +461,68 @@ def reverse_patch(content, patch):
     return reverse_hunks(content, [h.get("lines") or [] for h in patch], [h.get("newStart", 1) - 1 for h in patch])
 
 
-def turn_base(ops, final):
-    """이번 턴 첫 수정 직전의 파일. 지금 파일에서 이번 턴 수정을 뒤에서부터 되돌린다. 못 되돌리면 None.
-    수정마다 쓰는 것: Claude Edit 는 수정 직전 파일(originalFile) > 바뀐 덩어리(structuredPatch) > 문자열 되바꾸기,
-    Claude Write 는 덮어쓴 경우 바뀐 덩어리, 새로 만든 경우 빈 글. Codex 는 Add File 이면 빈 글, Update File 이면 덩어리."""
-    content = final
-    for kind, text, extra in reversed(ops):
-        res = extra.get("result") or {}
-        tool = extra.get("tool")
-        if tool == "patch":
-            if kind == "write":
-                return ""
-            content = reverse_hunks(content, extra.get("hunks") or [])
-        elif tool == "Write":
-            if res.get("type") == "update" and res.get("structuredPatch"):
-                content = reverse_patch(content, res["structuredPatch"])
-            else:
-                return ""               # 새로 만들었거나 결과가 없다. 쓴 내용 전체가 이번 턴 글이다
-        elif isinstance(res.get("originalFile"), str):
-            content = res["originalFile"]
-        elif res.get("structuredPatch"):
-            content = reverse_patch(content, res["structuredPatch"])
-        else:
-            for old, new, every in reversed(extra.get("edits") or []):
-                if not new:
-                    continue                # 지우기만 한 수정은 자리를 모른다. 지운 글은 지금 파일에 없으니 건너뛴다
-                if new not in content:
-                    return None
-                if every:
-                    return None             # 원래 있던 같은 글까지 되돌리게 되니 자리를 모르는 것으로 본다
-                spots, i = [], content.find(new)
-                while i >= 0:
-                    spots.append(i)
-                    i = content.find(new, i + 1)
-                masked = mask(content) if len(spots) > 1 else None
-                at = min(spots, key=lambda x: ink(masked[x:x + len(new)])) if masked else spots[0]
-                content = content[:at] + old + content[at + len(new):]
-        if content is None:
-            return None
+def pre_state(op):
+    """이 수정 직전 파일을 정확히 알면 그 글, 모르면 None. 새로 만든 파일은 빈 글이다."""
+    kind, _, extra = op
+    res = extra.get("result") or {}
+    tool = extra.get("tool")
+    if (tool == "patch" and kind == "write") or (tool == "Write" and res.get("type") == "create"):
+        return ""
+    if tool in ("Edit", "MultiEdit") and isinstance(res.get("originalFile"), str):
+        return res["originalFile"]
+    return None
+
+
+def undo(op, content):
+    """수정 직후 글(content)에서 그 수정을 되돌린 글. 자리를 모르면 None.
+    Claude Edit 는 originalFile > structuredPatch > 문자열 되바꾸기, Write 는 덮어쓴 경우 structuredPatch,
+    Codex Update File 은 패치 덩어리를 거꾸로 적용한다."""
+    kind, _, extra = op
+    res = extra.get("result") or {}
+    tool = extra.get("tool")
+    pre = pre_state(op)
+    if pre is not None:
+        return pre
+    if tool == "patch":
+        return reverse_hunks(content, extra.get("hunks") or [])
+    if res.get("structuredPatch"):
+        return reverse_patch(content, res["structuredPatch"])
+    if tool == "Write":
+        return None
+    for old, new, every in reversed(extra.get("edits") or []):
+        if not new:
+            continue                    # 지우기만 한 수정은 자리를 모른다. 지운 글은 지금 파일에 없으니 건너뛴다
+        if every or new not in content:
+            return None                 # replace_all 은 원래 있던 같은 글까지 되돌리게 되니 자리를 모르는 것으로 본다
+        spots, i = [], content.find(new)
+        while i >= 0:
+            spots.append(i)
+            i = content.find(new, i + 1)
+        masked = mask(content) if len(spots) > 1 else None
+        at = min(spots, key=lambda x: ink(masked[x:x + len(new)])) if masked else spots[0]
+        content = content[:at] + old + content[at + len(new):]
     return content
+
+
+def turn_base(ops, final):
+    """(비교 기준 파일, 그 기준에 넣지 못한 앞쪽 수정들).
+    수정 직전 파일을 정확히 아는 가장 앞 수정이 있으면 그 파일에서 시작해 그보다 앞선 수정만 되돌린다(그 뒤 수정은 되돌릴 필요가 없다).
+    없으면 지금 파일에서 모든 수정을 뒤에서부터 되돌린다. 중간에 자리를 모르는 수정을 만나면 거기서 멈추고,
+    그때까지의 글을 기준으로 쓰고 남은 앞쪽 수정은 따로 본다."""
+    start, content = len(ops), final
+    for k, op in enumerate(ops):
+        pre = pre_state(op)
+        if pre is not None:
+            if pre == "" and op[2].get("tool") in ("Write", "patch"):
+                return "", []           # 이번 턴에 새로 만든 파일이다. 지금 글 전체가 이번 턴 글이다
+            start, content = k, pre
+            break
+    for j in range(start - 1, -1, -1):
+        before = undo(ops[j], content)
+        if before is None:
+            return content, ops[:j + 1]
+        content = before
+    return content, []
 
 
 def file_targets(path, ops):
@@ -507,16 +530,25 @@ def file_targets(path, ops):
     final = read_file(path)
     if final is None:
         return []                       # 지웠거나 옮겼다
-    base = turn_base(ops, final)
-    if base is not None:
-        spans = net_spans(base, final)
-        if not spans:
-            return []
-        return [(keep(mask(final), spans) if path.endswith(".md") else None, keep(final, spans))]
-    out = []                            # 되돌리지 못하면 수정마다 새 글이 지금 파일에 있는 자리를 찾아 파일 전체 기준으로 본다
-    masked = mask(final)
-    for kind, text, extra in ops:
+    base, rest = turn_base(ops, final)
+    out = []
+    spans = net_spans(base, final)
+    if spans:
+        out.append((keep(mask(final), spans) if path.endswith(".md") else None, keep(final, spans)))
+    masked = mask(final)                # 기준에 넣지 못한 수정: 새 글이 지금 파일에 있는 자리를 찾아 파일 전체 기준으로 본다
+    for kind, text, extra in rest:
         pairs = extra.get("edits") or [(None, text, False)]
+        if extra.get("tool") == "patch":    # 패치는 더한 줄마다, 바로 앞에서 뺀 줄과 짝지어 본다(문맥 줄이 끼어 한 덩어리로는 못 찾는다)
+            pairs = []
+            for hunk in extra.get("hunks") or []:
+                removed = []
+                for l in hunk:
+                    if l.startswith("-"):
+                        removed.append(l[1:])
+                    elif l.startswith("+"):
+                        pairs.append((removed.pop(0) if removed else None, l[1:], False))
+                    else:
+                        removed = []
         for old, new, _ in pairs:
             spots, i = [], final.find(new) if new else -1
             while i >= 0:

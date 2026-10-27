@@ -369,6 +369,42 @@ class GuardTests(unittest.TestCase):
         out = self.run_guard([prompt("고쳐"), tool("Edit", file_path=str(doc), old_string="X", new_string=line, replace_all=True)])
         self.assertEqual(out, {})
 
+    def test_exact_original_file_wins_over_unplaced_later_edit(self):
+        doc = self.dir / "doc.md"
+        bad = "기존 %s 글" % DASH
+        orig = bad + "\n옛\nX\n"
+        after = bad + "\n" + bad + "\nX\n"
+        doc.write_text(bad + "\n새 글\nY\n", encoding="utf-8")
+        out = self.run_guard([prompt("고쳐"),
+                              tool("Edit", "a", file_path=str(doc), old_string="옛", new_string=bad),
+                              result("a", originalFile=orig),
+                              tool("Edit", "b", file_path=str(doc), old_string=bad + "\nX", new_string="새 글\nX"),
+                              result("b", originalFile=after),
+                              tool("Edit", "c", file_path=str(doc), old_string="X", new_string="Y", replace_all=True)])
+        self.assertEqual(out, {})
+
+    def test_partial_base_when_early_edit_is_unplaced(self):
+        doc = self.dir / "doc.md"
+        doc.write_text("```\nx %s y\n```\n본문 %s 끝\n" % (DASH, DASH), encoding="utf-8")
+        # 앞 수정(코드 안)은 결과가 없고 replace_all 이라 되돌리지 못한다. 뒤 수정(본문 줄표)은 originalFile 이 있다
+        out = self.run_guard([prompt("고쳐"),
+                              tool("Edit", file_path=str(doc), old_string="x old y", new_string="x %s y" % DASH, replace_all=True),
+                              tool("Edit", "t2", file_path=str(doc), old_string="본문 끝", new_string="본문 %s 끝" % DASH),
+                              result("t2", originalFile="```\nx %s y\n```\n본문 끝\n" % DASH)])
+        self.assertBlocked(out, "파일 doc.md: 줄표")
+        self.assertNotIn("x %s y" % DASH, out["reason"])
+
+    def test_codex_unplaced_patch_checks_each_added_line(self):
+        doc = self.dir / "doc.md"
+        doc.write_text("머리\n새 %s 줄\n가운데\n기존 %s 문장 새말\n" % (DASH, DASH), encoding="utf-8")
+        # 첫 줄 문맥이 지금 파일과 달라(뒤에 셸로 바꿈) 덩어리를 되돌릴 수 없다
+        patch = ("*** Begin Patch\n*** Update File: %s\n@@\n 옛 머리\n+새 %s 줄\n 가운데\n-기존 %s 문장 옛말\n+기존 %s 문장 새말\n*** End Patch"
+                 % (doc, DASH, DASH, DASH))
+        out = self.run_guard([codex_meta(), codex_turn(), codex_exec("text(await tools.apply_patch(%s))" % js_string(patch))])
+        self.assertBlocked(out, "파일 doc.md: 줄표")
+        self.assertIn("새 %s 줄" % DASH, out["reason"])
+        self.assertNotIn("문장 새말", out["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()
