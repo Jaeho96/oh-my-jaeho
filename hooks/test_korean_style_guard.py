@@ -1,0 +1,130 @@
+"""korean_style_guard.py 시험. 가짜 Claude Code 대화 기록과 Codex rollout 으로 잡을 것 · 넘길 것을 본다."""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+HOOK = Path(__file__).resolve().parent / "korean_style_guard.py"
+DASH = "—"
+HANGUL_ESCAPE = "\\" + "u" + "ac00"       # 파일에 그대로 쓰면 깨지는 꼴. 시험 파일에는 조각으로 둔다
+
+
+def prompt(text):
+    return {"type": "user", "message": {"role": "user", "content": text}}
+
+
+def answer(text):
+    return {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}
+
+
+def tool(name, **inp):
+    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": name, "input": inp}]}}
+
+
+def codex_meta():
+    return {"type": "session_meta", "payload": {"id": "s"}}
+
+
+def codex_turn():
+    return {"type": "event_msg", "payload": {"type": "task_started"}}
+
+
+def codex_answer(text):
+    return {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                                 "content": [{"type": "output_text", "text": text}]}}
+
+
+def codex_exec(js):
+    return {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "input": js}}
+
+
+class GuardTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.state = self.dir / "state.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_guard(self, entries, session="s1", active=False):
+        path = self.dir / ("%s.jsonl" % session)
+        path.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in entries) + "\n", encoding="utf-8")
+        data = {"session_id": session, "transcript_path": str(path), "stop_hook_active": active}
+        env = dict(os.environ, STYLE_GUARD_STATE=str(self.state))
+        p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(data), capture_output=True,
+                           text=True, env=env, timeout=10)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return json.loads(p.stdout)
+
+    def assertBlocked(self, out, *words):
+        self.assertEqual(out.get("decision"), "block", out)
+        for w in words:
+            self.assertIn(w, out["reason"])
+
+    def test_bold_attached_to_korean_in_answer(self):
+        self.assertBlocked(self.run_guard([prompt("해 줘"), answer("결과는 **굵게**가 붙었습니다.")]), "답: 굵게")
+
+    def test_code_backtick_and_quote_are_skipped(self):
+        text = "`a %s b` 와 `**굵게**는` 은 코드다.\n```\nx %s y\n```\n> 인용 %s 원문\n끝났습니다." % (DASH, DASH, DASH)
+        self.assertEqual(self.run_guard([prompt("해 줘"), answer(text)]), {})
+
+    def test_only_current_turn(self):
+        out = self.run_guard([prompt("하나"), answer("앞 턴 %s 줄표" % DASH), prompt("둘"), answer("깨끗한 답입니다.")])
+        self.assertEqual(out, {})
+
+    def test_markdown_file_dash(self):
+        out = self.run_guard([prompt("써 줘"), tool("Write", file_path="/x/notes.md", content="제목 %s 부제" % DASH),
+                              answer("썼습니다.")])
+        self.assertBlocked(out, "파일 notes.md: 줄표")
+
+    def test_edit_checks_only_new_text(self):
+        out = self.run_guard([prompt("고쳐 줘"), tool("Edit", file_path="/x/a.md", old_string="옛 %s 글" % DASH,
+                                                       new_string="새 글"), answer("고쳤습니다.")])
+        self.assertEqual(out, {})
+
+    def test_vocabulary_word_and_exceptions(self):
+        self.assertBlocked(self.run_guard([prompt("써"), tool("Write", file_path="/x/a.md", content="고아 노트를 정리")]),
+                           "쓰지 않는 단어")
+        mention = "금지어 「고아」와 줄표(%s), 예문 「제목 %s 부제」는 언급이다." % (DASH, DASH)
+        self.assertEqual(self.run_guard([prompt("써"), answer(mention)], session="s2"), {})
+        self.assertEqual(self.run_guard([prompt("써"), answer("배우 고아성이 나온다.")], session="s3"), {})
+        rules = tool("Write", file_path="/repo/rules/vocabulary.md", content="| 고아 | 미해결 링크 | **굵게**는 %s" % DASH)
+        self.assertEqual(self.run_guard([prompt("써"), rules], session="s4"), {})
+
+    def test_hangul_escape_in_any_file(self):
+        out = self.run_guard([prompt("써"), tool("Write", file_path="/x/a.json", content='{"t": "%s"}' % HANGUL_ESCAPE)])
+        self.assertBlocked(out, "파일 a.json: 한글 이스케이프")
+        other = "\\" + "u2014"                # 한글이 아닌 이스케이프는 넘긴다
+        self.assertEqual(self.run_guard([prompt("써"), tool("Write", file_path="/x/b.py", content=other)], session="s2"), {})
+
+    def test_commit_credit_line(self):
+        cmd = "git commit -F - <<'EOF'\nfix: 고친다\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nEOF"
+        self.assertBlocked(self.run_guard([prompt("커밋"), tool("Bash", command=cmd)]), "커밋 메시지: Claude 표기")
+
+    def test_reentry_and_second_stop_pass(self):
+        entries = [prompt("해"), answer("결과 %s 이렇다" % DASH)]
+        self.assertEqual(self.run_guard(entries, active=True), {})
+        self.assertBlocked(self.run_guard(entries), "줄표")
+        self.assertEqual(self.run_guard(entries + [answer("인용이라 그대로 둡니다.")]), {})
+
+    def test_scheduled_session_passes(self):
+        self.assertEqual(self.run_guard([prompt("<scheduled-task name='x'>"), answer("a %s b" % DASH)]), {})
+
+    def test_codex_answer_and_patch(self):
+        self.assertBlocked(self.run_guard([codex_meta(), codex_turn(), codex_answer("끝 %s 났다" % DASH)]), "답: 줄표")
+        js = 'text(await tools.apply_patch("*** Begin Patch\\n*** Add File: /x/notes.md\\n+**굵게**를 썼다\\n*** End Patch"))'
+        self.assertBlocked(self.run_guard([codex_meta(), codex_turn(), codex_exec(js)], session="c2"),
+                           "파일 notes.md: 굵게")
+
+    def test_codex_previous_turn_is_ignored(self):
+        out = self.run_guard([codex_meta(), codex_turn(), codex_answer("앞 %s 턴" % DASH), codex_turn(),
+                              codex_answer("깨끗합니다.")])
+        self.assertEqual(out, {})
+
+
+if __name__ == "__main__":
+    unittest.main()

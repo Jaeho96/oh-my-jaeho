@@ -38,6 +38,7 @@ docs/                       설계 메모·로드맵
 | 규칙 | `korean-style` · `korean-style-toss` | 사람이 쓴 것처럼 읽히는 한국어 문체(빈 동사, 번역 투, 빈말, 확인한 만큼만 쓰기 등)와 토스 테크니컬 라이팅 가이드 예문. Codex 에는 훅으로 넣는다 |
 | 파일 | `statusline/statusline.py` | Claude Code 상태줄 (`~/.claude/statusline.py`로 연결) |
 | 파일 | `hooks/korean_style_context.py` | Codex 세션과 하위 에이전트가 시작할 때 한국어 문체 지침을 넣는 훅 (`tools/korean_style_hooks.py` 로 등록) |
+| 파일 | `hooks/korean_style_guard.py` | 작업 끝(Stop)에 답 · .md 파일 · 커밋 메시지에서 한글에 붙은 굵게, 줄표, 쓰지 않는 단어, 손으로 쓴 한글 이스케이프, 커밋의 Claude 표기를 찾아 한 번 되돌리는 훅 (Claude · Codex 공용) |
 
 레포 밖에서 따로 설치해 쓰는 플러그인·스킬은 [docs/external.md](docs/external.md).
 
@@ -56,11 +57,11 @@ git config core.hooksPath .githooks   # 커밋 전 공개 검사 켜기 (처음 
 
 ### 한국어 문체 지침을 Codex 에도 넣기
 
-Claude Code 는 `sync.py --apply` 로 연결한 `~/.claude/rules/korean-style*.md` 를 읽는다(일반 하위 에이전트도 받는다). Codex 는 그 폴더를 모르니 훅으로 넣는다.
+Claude Code 는 `sync.py --apply` 로 연결한 `~/.claude/rules/korean-style*.md` 를 읽는다(일반 하위 에이전트도 받는다). Codex 는 그 폴더를 모르니 훅으로 넣는다. 기계로 판정할 수 있는 위반은 둘 다 Stop 훅(`korean_style_guard.py`)이 잡는다.
 
 ```bash
 python3 tools/korean_style_hooks.py            # 미리보기
-python3 tools/korean_style_hooks.py --apply    # Codex hooks.json 에 SessionStart · SubagentStart 훅 등록
+python3 tools/korean_style_hooks.py --apply    # Codex hooks.json 에 SessionStart · SubagentStart · Stop, Claude settings.json 에 Stop 등록
 ```
 
 - 등록한 뒤 Codex 를 열어 `/hooks` 에서 새 훅을 신뢰(Trust)해야 돈다. 신뢰하지 않은 훅은 `codex exec` 에서도 건너뛴다.

@@ -1,4 +1,4 @@
-"""korean_style_hooks.py 시험. 임시 HOME 의 Codex hooks.json 에 등록 · 재등록 · 제거하며 다른 훅이 남는지 본다."""
+"""korean_style_hooks.py 시험. 임시 HOME 의 Claude settings.json · Codex hooks.json 에 등록 · 재등록 · 제거하며 다른 훅이 남는지 본다."""
 import json
 import os
 import subprocess
@@ -10,6 +10,7 @@ from pathlib import Path
 TOOL = Path(__file__).resolve().parent / "korean_style_hooks.py"
 OTHER = {"type": "command", "command": "/usr/bin/python3 \"$HOME/.claude/hooks/wiki_sync.py\" --detach", "timeout": 10}
 OURS_CMD = "/.claude/hooks/korean_style_context.py"
+GUARD_CMD = "/.claude/hooks/korean_style_guard.py"
 
 
 class KoreanStyleHooksTests(unittest.TestCase):
@@ -18,8 +19,10 @@ class KoreanStyleHooksTests(unittest.TestCase):
         self.home = Path(self.tmp.name)
         (self.home / ".codex").mkdir()
         (self.home / ".claude" / "hooks").mkdir(parents=True)
-        (self.home / ".claude" / "hooks" / "korean_style_context.py").write_text("", encoding="utf-8")
+        for name in ("korean_style_context.py", "korean_style_guard.py"):
+            (self.home / ".claude" / "hooks" / name).write_text("", encoding="utf-8")
         self.path = self.home / ".codex" / "hooks.json"
+        self.claude = self.home / ".claude" / "settings.json"
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -44,6 +47,9 @@ class KoreanStyleHooksTests(unittest.TestCase):
         data = self.read()
         self.assertEqual(sum(OURS_CMD in c for c in self.commands(data, "SessionStart")), 1)
         self.assertEqual(sum(OURS_CMD in c for c in self.commands(data, "SubagentStart")), 1)
+        self.assertEqual(self.commands(data, "Stop")[0], OTHER["command"])
+        self.assertEqual(sum(GUARD_CMD in c for c in self.commands(data, "Stop")), 1)
+        self.assertFalse(self.claude.exists())     # Claude settings.json 은 없으면 만들지 않는다
         before = self.path.read_text(encoding="utf-8")
         again = self.run_tool("--apply")
         self.assertIn("이미 있음", again.stdout)
@@ -71,6 +77,19 @@ class KoreanStyleHooksTests(unittest.TestCase):
         self.assertEqual(self.run_tool("--remove", "--apply").returncode, 0)
         self.assertEqual(self.path.read_text(encoding="utf-8"), before)
         self.assertFalse((self.home / ".omj").exists())
+
+    def test_claude_settings_gets_only_stop_guard(self):
+        original = {"model": "x", "hooks": {"Stop": [{"hooks": [OTHER]}]}}
+        self.claude.write_text(json.dumps(original), encoding="utf-8")
+        self.write({"hooks": {}})
+        self.assertEqual(self.run_tool("--apply").returncode, 0)
+        data = json.loads(self.claude.read_text(encoding="utf-8"))
+        self.assertEqual(data["model"], "x")
+        self.assertEqual(set(data["hooks"]), {"Stop"})
+        self.assertEqual(self.commands(data, "Stop")[0], OTHER["command"])
+        self.assertEqual(sum(GUARD_CMD in c for c in self.commands(data, "Stop")), 1)
+        self.assertEqual(self.run_tool("--remove", "--apply").returncode, 0)
+        self.assertEqual(json.loads(self.claude.read_text(encoding="utf-8")), original)
 
     def test_missing_hook_file_stops(self):
         (self.home / ".claude" / "hooks" / "korean_style_context.py").unlink()

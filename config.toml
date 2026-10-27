@@ -40,3 +40,8 @@ dest = "~/.claude/hooks/wiki_sync.py"
 [[files]]
 src = "hooks/korean_style_context.py"
 dest = "~/.claude/hooks/korean_style_context.py"
+
+# 문체 검사 Stop 훅. Claude settings.json · Codex hooks.json 이 이 자리를 부른다(tools/korean_style_hooks.py 로 등록) (2026-10-27)
+[[files]]
+src = "hooks/korean_style_guard.py"
+dest = "~/.claude/hooks/korean_style_guard.py"
