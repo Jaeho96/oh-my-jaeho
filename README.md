@@ -30,6 +30,7 @@ docs/                       설계 메모·로드맵
 | 스킬 | `session-handoff` | 다른 에이전트 세션(같은 맥의 Claude·Codex, 원격 맥)에 일을 맡기고 결과를 받는다. herdr는 초인종, 공유 위키 `raw/`는 우편함 |
 | 스킬 | `youtube-to-obsidian` | 유튜브 자막 → 옵시디언 노트(원문 → 정리본 → 요약) |
 | 스킬 | `collecting-zoom-clips` | Zoom Clips 공유 링크에서 녹취록·챕터·요약을 뽑아 볼트에 저장 |
+| 스킬 | `grill` | 실행 전에 목표·요구사항·범위를 질문 라운드(번호 + 추천 답)로 다듬고, 합의 요약을 확인받은 뒤 시작한다. 큰 작업이면 먼저 한 줄로 제안만 한다 (Matt Pocock grilling 기반) |
 | 스킬 | `design-compare` | Claude Design 시안과 로컬 렌더를 대조해 미구현 차이만 골라 반영 |
 | 스킬 | `work-report` | 업무 현황판 기반 일보·주보와 놓친 일 점검 — **v0 뼈대**(실동작 본은 아직 로컬 비공개, 배포 목록에 없음) |
 | 규칙 | `vocabulary` · `verification` · `troubleshooting-log` · `writing` | 금지 단어, 작업 원칙과 완료 기준, 문제 해결 기록, 두괄식 쓰기 |

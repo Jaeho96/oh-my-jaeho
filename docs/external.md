@@ -5,7 +5,7 @@
 ## Claude Code 플러그인
 | 플러그인 | 쓰임 |
 |---|---|
-| superpowers | brainstorming · writing-plans · subagent-driven-development · systematic-debugging 등 (자주 씀) |
+| superpowers | 꺼 둠(Claude 는 2026-08-18, Codex 는 config.toml `enabled = false`). 세션마다 지시를 강제로 끼워 넣어서 끔. brainstorming 자리는 이 레포의 `grill` 스킬(Matt Pocock grilling 기반, 2026-10-27)이 대신한다 |
 | codex (openai-codex) | Claude 안에서 Codex 호출 (`/codex:rescue` 등) |
 | context7 · playwright · notion · figma · ralph-loop | 문서 조회, 브라우저 조작, 노션, 피그마, 반복 실행 |
 

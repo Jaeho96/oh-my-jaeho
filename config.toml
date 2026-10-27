@@ -11,6 +11,7 @@ items = [
   "session-handoff",
   "youtube-to-obsidian",
   "collecting-zoom-clips",
+  "grill",
   # Claude 에서는 settings.json skillOverrides 로 꺼 둔 스킬이다. Codex 는 그 설정을 모르니 Codex 에는 배포하지 않는다.
   { name = "design-compare", platforms = ["claude"] },
 ]
