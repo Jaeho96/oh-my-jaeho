@@ -411,14 +411,32 @@ def net_spans(base, final):
     for line in b:
         starts.append(pos)
         pos += len(line) + 1
+    # 앞뒤의 같은 줄을 먼저 떼어 낸다. 같은 줄이 여러 번 나오면 difflib 가 짝을 엇갈리게 맞춰 원래 있던 줄을 새 줄로 볼 수 있다
+    head = 0
+    while head < len(a) and head < len(b) and a[head] == b[head]:
+        head += 1
+    tail = 0
+    while tail < len(a) - head and tail < len(b) - head and a[-1 - tail] == b[-1 - tail]:
+        tail += 1
+    mid_a, mid_b = a[head:len(a) - tail], b[head:len(b) - tail]
+    ops = difflib.SequenceMatcher(None, mid_a, mid_b, autojunk=False).get_opcodes()
+    # 지운 줄과 똑같은 줄이 다른 자리에 들어간 것으로 나오면 옮겨진(또는 짝이 엇갈린) 줄이다. 새 글로 치지 않는다
+    removed = {}
+    for tag, i1, i2, _, _ in ops:
+        if tag != "equal":
+            for line in mid_a[i1:i2]:
+                removed[line] = removed.get(line, 0) + 1
     spans = []
-    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+    for tag, i1, i2, j1, j2 in ops:
         if tag == "equal":
             continue
         for k in range(j2 - j1):
-            j = j1 + k
+            j = head + j1 + k
+            if removed.get(b[j], 0) > 0:
+                removed[b[j]] -= 1
+                continue
             if tag == "replace" and k < i2 - i1:
-                spans += [(starts[j] + x, starts[j] + y) for x, y in changed_spans(a[i1 + k], b[j])]
+                spans += [(starts[j] + x, starts[j] + y) for x, y in changed_spans(mid_a[i1 + k], b[j])]
             else:
                 spans.append((starts[j], starts[j] + len(b[j])))
     return spans
@@ -466,8 +484,8 @@ def pre_state(op):
     kind, _, extra = op
     res = extra.get("result") or {}
     tool = extra.get("tool")
-    if (tool == "patch" and kind == "write") or (tool == "Write" and res.get("type") == "create"):
-        return ""
+    if (tool == "patch" and kind == "write") or (tool == "Write" and res.get("type") != "update"):
+        return ""                       # 새로 만든 파일, 또는 결과가 없는 Write: 쓴 글 전체가 이번 턴 글이다
     if tool in ("Edit", "MultiEdit") and isinstance(res.get("originalFile"), str):
         return res["originalFile"]
     return None
@@ -485,10 +503,10 @@ def undo(op, content):
         return pre
     if tool == "patch":
         return reverse_hunks(content, extra.get("hunks") or [])
+    if tool == "Write":                 # 덮어쓴 Write: 바뀐 덩어리를 거꾸로(바뀐 게 없으면 그대로)
+        return reverse_patch(content, res.get("structuredPatch") or [])
     if res.get("structuredPatch"):
         return reverse_patch(content, res["structuredPatch"])
-    if tool == "Write":
-        return None
     for old, new, every in reversed(extra.get("edits") or []):
         if not new:
             continue                    # 지우기만 한 수정은 자리를 모른다. 지운 글은 지금 파일에 없으니 건너뛴다

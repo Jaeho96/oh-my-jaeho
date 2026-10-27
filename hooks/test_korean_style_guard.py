@@ -405,6 +405,36 @@ class GuardTests(unittest.TestCase):
         self.assertIn("새 %s 줄" % DASH, out["reason"])
         self.assertNotIn("문장 새말", out["reason"])
 
+    def test_repeated_lines_do_not_misalign_diff(self):
+        doc = self.dir / "doc.md"
+        orig = "기존 %s 글\n\na\n기존 %s 글\n" % (DASH, DASH)
+        mid = orig.replace("a", "C")
+        final = mid.replace("\nC\n", "a\n")
+        doc.write_text(final, encoding="utf-8")
+        out = self.run_guard([prompt("본문 수정"),
+                              tool("Edit", "e1", file_path=str(doc), old_string="a", new_string="C", replace_all=True),
+                              tool("Edit", "e2", file_path=str(doc), old_string="\nC\n", new_string="a\n"),
+                              result("e2", originalFile=mid)])
+        self.assertEqual(out, {})
+
+    def test_write_without_result_then_edit_keeps_written_dash(self):
+        doc = self.dir / "doc.md"
+        doc.write_text("제목 %s 부제\n새\n" % DASH, encoding="utf-8")
+        out = self.run_guard([prompt("새 문서를 쓰고 끝줄을 고쳐"),
+                              tool("Write", "w", file_path=str(doc), content="제목 %s 부제\n옛\n" % DASH),
+                              tool("Edit", "e", file_path=str(doc), old_string="옛", new_string="새")])
+        self.assertBlocked(out, "파일 doc.md: 줄표")
+
+    def test_moved_line_is_not_new_text(self):
+        doc = self.dir / "doc.md"
+        line = "기존 %s 글" % DASH
+        orig = "C\n\n%s\n%s\nC\n\nb" % (line, line)
+        final = "C\n%s\n\n%s\nC\n\nb" % (line, line)      # 빈 줄의 자리만 옮겼다
+        doc.write_text(final, encoding="utf-8")
+        out = self.run_guard([prompt("줄 정리"), tool("Edit", "e", file_path=str(doc), old_string="x", new_string="y"),
+                              result("e", originalFile=orig)])
+        self.assertEqual(out, {})
+
 
 if __name__ == "__main__":
     unittest.main()
