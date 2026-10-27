@@ -9,8 +9,9 @@
 - 커밋 메시지의 Claude 표기(Co-Authored-By 의 Claude · Anthropic, Generated with Claude Code)
 
 보는 범위: 마지막 사용자 지시 뒤에 이 세션이 쓴 답, 파일에 새로 쓴 글, git commit 의 메시지.
-- 파일: Write 는 쓴 내용 전체, Edit · Codex 패치는 지금 파일에서 새 글이 있는 자리만 본다. 코드 블록 판정은 파일 전체로 하므로
-  기존 코드 블록 안을 고친 글은 문장으로 보지 않는다.
+- 파일: 이번 턴 첫 수정 직전 파일과 지금 파일을 비교해, 이번 턴에 바뀌어 지금 남아 있는 단어만 본다. 수정 직전 파일은 지금 파일에서
+  이번 턴 수정을 뒤에서부터 되돌려 만든다(Claude 결과의 originalFile · structuredPatch, Codex 패치 덩어리). 코드 블록 판정은
+  지금 파일 전체로 하므로 기존 코드 블록 안을 고친 글은 문장으로 보지 않는다. 고쳐 놓은 글, 줄 일부 수정의 손대지 않은 부분은 보지 않는다.
 - 커밋: git 옵션(-C 경로, -c 키=값)을 건너 commit 을 찾고 메시지만 꺼낸다(-m, --message, -F 파일, -F - 의 heredoc,
   -m "$(cat <<'EOF' … EOF)"). 같은 명령줄의 다른 명령은 보지 않는다. Codex 는 exec 자바스크립트의 cmd 문자열에서 찾는다.
 빼는 것: 코드 블록, 백틱 안, 「> 」 인용 줄, 「」 안, 기호만 든 괄호, 기호와 금지어를 설명하는 rules/vocabulary.md · rules/korean-style.md.
@@ -232,14 +233,16 @@ def claude_pieces(lines):
                 path = inp.get("file_path", "")
                 res = results.get(item.get("id")) or {}
                 if name == "Write":
-                    yield n, "write", path, inp.get("content") or "", cwd, {}
+                    yield n, "write", path, inp.get("content") or "", cwd, {"tool": "Write", "result": res}
                 elif name == "Edit" and inp.get("new_string"):
-                    yield n, "edit", path, inp["new_string"], cwd, {
-                        "result": res, "old": inp.get("old_string") or "", "all": bool(inp.get("replace_all"))}
-                elif name == "MultiEdit":                    # 결과의 바뀐 줄(structuredPatch)로 자리를 찾는다
-                    new = "\n".join(e.get("new_string", "") for e in inp.get("edits") or [] if isinstance(e, dict))
-                    if new:
-                        yield n, "edit", path, new, cwd, {"result": {"structuredPatch": res.get("structuredPatch")}}
+                    edits = [(inp.get("old_string") or "", inp["new_string"], bool(inp.get("replace_all")))]
+                    yield n, "edit", path, inp["new_string"], cwd, {"tool": "Edit", "result": res, "edits": edits}
+                elif name == "MultiEdit":
+                    edits = [(e.get("old_string") or "", e.get("new_string") or "", bool(e.get("replace_all")))
+                             for e in inp.get("edits") or [] if isinstance(e, dict)]
+                    if edits:
+                        yield n, "edit", path, "\n".join(e[1] for e in edits), cwd, {
+                            "tool": "MultiEdit", "result": res, "edits": edits}
                 elif name == "Bash":
                     yield n, "shell", "", inp.get("command", ""), cwd, {}
 
@@ -267,8 +270,7 @@ def patch_files(text):
             cur["hunks"][-1].append(line)
         else:
             cur["hunks"][-1].append(" " + line[1:] if line.startswith(" ") else " " + line)
-    return [(f["kind"], f["path"], "\n".join(f["added"]),
-             [h for h in f["hunks"] if any(l.startswith("+") for l in h)]) for f in files]
+    return [(f["kind"], f["path"], "\n".join(f["added"]), [h for h in f["hunks"] if h]) for f in files]
 
 
 def shell_from_args(args):
@@ -361,7 +363,7 @@ def codex_pieces(lines):
                 for kind, path, added, hunks in patch_files(patch):
                     if path and not os.path.isabs(path) and cwd:
                         path = os.path.join(cwd, path)
-                    yield n, kind, path, added, cwd, {"hunks": hunks}
+                    yield n, kind, path, added, cwd, {"tool": "patch", "hunks": hunks}
         for sh, wd in shells:
             if sh:
                 yield n, "shell", "", sh, resolve(wd, cwd) if wd else cwd, {}
@@ -373,11 +375,6 @@ def read_file(path):
             return f.read()
     except OSError:
         return None
-
-
-def ink(s):
-    """지워지지 않고 남은 글자 수. 자리를 못 정할 때 가장 많이 지워진(코드 안) 자리를 고르는 데 쓴다."""
-    return len(re.sub(r"\s", "", s))
 
 
 def changed_spans(old, new):
@@ -406,82 +403,100 @@ def keep(text, spans):
     return "".join(out)
 
 
-def hunk_changes(hunk):
-    """덩어리에서 (문맥 + 더한 줄) 목록과, 더한 줄마다 달라진 범위. 바로 앞에서 뺀 줄과 짝지어 비교한다."""
-    kept, spans, removed = [], {}, []
-    for l in hunk:
-        if l.startswith("-"):
-            removed.append(l[1:])
-        elif l.startswith("+"):
-            spans[len(kept)] = changed_spans(removed.pop(0), l[1:]) if removed else [(0, len(l) - 1)]
-            kept.append(l[1:])
-        else:
-            removed = []
-            kept.append(l[1:])
-    return kept, spans
-
-
-def hunk_body(whole, hunks, hints=None):
-    """덩어리를 지금 파일에서 찾아, 더한 줄의 달라진 범위만 지운(mask) 글로 돌려준다. 하나도 못 찾으면 None.
-    여러 자리에 있으면 줄 번호 힌트에 가장 가까운 자리, 힌트가 없으면 가장 많이 지워진 자리를 고른다."""
-    lines = whole.split("\n")
-    masked = mask(whole).split("\n")
-    parts, found = [], False
-    for k, hunk in enumerate(hunks):
-        block, spans = hunk_changes(hunk)
-        if not block or not spans:
+def net_spans(base, final):
+    """base 에서 final 로 달라진 범위(final 의 글자 자리). 줄 단위로 맞춘 뒤 바뀐 줄은 단어 단위까지 좁힌다."""
+    a, b = base.split("\n"), final.split("\n")
+    starts, pos = [], 0
+    for line in b:
+        starts.append(pos)
+        pos += len(line) + 1
+    spans = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
             continue
-        starts = [s for s in range(len(lines) - len(block) + 1)
-                  if lines[s] == block[0] and lines[s:s + len(block)] == block]
+        for k in range(j2 - j1):
+            j = j1 + k
+            if tag == "replace" and k < i2 - i1:
+                spans += [(starts[j] + x, starts[j] + y) for x, y in changed_spans(a[i1 + k], b[j])]
+            else:
+                spans.append((starts[j], starts[j] + len(b[j])))
+    return spans
+
+
+def reverse_hunks(content, hunks, hints=None):
+    """덩어리(문맥 · 뺀 · 더한 줄)를 거꾸로 적용해 수정 전 글을 만든다. 덩어리를 못 찾으면 None.
+    같은 덩어리가 여러 자리에 있으면 줄 번호 힌트에 가장 가까운 자리(없으면 첫 자리)."""
+    lines = content.split("\n")
+    for k in range(len(hunks) - 1, -1, -1):
+        hunk = [l for l in hunks[k] if l[:1] in (" ", "-", "+")]
+        new = [l[1:] for l in hunk if l[:1] in (" ", "+")]
+        old = [l[1:] for l in hunk if l[:1] in (" ", "-")]
+        if new == old or not new:      # 바뀐 게 없거나, 문맥 없이 지우기만 해서 자리를 모른다(지운 줄은 검사와 상관없다)
+            continue
+        starts = [s for s in range(len(lines) - len(new) + 1)
+                  if lines[s] == new[0] and lines[s:s + len(new)] == new]
         if not starts:
-            continue
-        found = True
-        segs = {s: [keep(masked[s + i], spans[i]) for i in sorted(spans)] for s in starts}
+            return None
         hint = hints[k] if hints and k < len(hints) else None
-        s = min(starts, key=lambda x: abs(x - hint)) if hint is not None else min(starts, key=lambda x: ink("".join(segs[x])))
-        parts += segs[s]
-    return "\n".join(parts) if found else None
+        s = min(starts, key=lambda x: abs(x - hint)) if hint is not None else starts[0]
+        lines[s:s + len(new)] = old
+    return "\n".join(lines)
 
 
-def edit_body(path, new, extra):
-    """Edit · 패치로 새로 쓴 글 가운데 실제로 바뀌어 지금 파일에 남은 부분만, 파일 전체 기준으로 지운(mask) 글."""
-    whole = read_file(path)
-    if whole is None:
-        return ""                                            # 파일이 없다(지웠거나 옮겼다)
-    res = extra.get("result") or {}
-    orig, old = res.get("originalFile"), extra.get("old")
-    spans = None
-    if old:
-        if new not in whole:
-            return ""                                        # 같은 턴에 다시 고쳐 지금 파일에 없다. 그 뒤 수정이 따로 검사된다
-        spans = changed_spans(old, new)
-    if isinstance(orig, str) and old and old in orig:         # 수정 직전 파일에 그 수정을 다시 적용해 자리를 안다
-        starts, i, shift = [], orig.find(old), 0
-        while i >= 0:
-            starts.append(i + shift)
-            if not extra.get("all"):
-                break
-            shift += len(new) - len(old)
-            i = orig.find(old, i + len(old))
-        post = orig.replace(old, new) if extra.get("all") else orig.replace(old, new, 1)
-        masked = mask(post)
-        return "\n".join(keep(masked[s:s + len(new)], spans) for s in starts)
-    patch = res.get("structuredPatch") or extra.get("hunks")
-    if patch:
-        if isinstance(patch[0], dict):                       # Claude: 줄 번호(newStart)가 있다
-            hints = [h.get("newStart", 1) - 1 for h in patch]
-            patch = [h.get("lines") or [] for h in patch]
+def reverse_patch(content, patch):
+    """Claude 결과의 structuredPatch 를 거꾸로 적용한다. newStart 는 그 수정 직후 파일의 줄 번호다."""
+    return reverse_hunks(content, [h.get("lines") or [] for h in patch], [h.get("newStart", 1) - 1 for h in patch])
+
+
+def turn_base(ops, final):
+    """이번 턴 첫 수정 직전의 파일. 지금 파일에서 이번 턴 수정을 뒤에서부터 되돌린다. 못 되돌리면 None.
+    수정마다 쓰는 것: Claude Edit 는 수정 직전 파일(originalFile) > 바뀐 덩어리(structuredPatch) > 문자열 되바꾸기,
+    Claude Write 는 덮어쓴 경우 바뀐 덩어리, 새로 만든 경우 빈 글. Codex 는 Add File 이면 빈 글, Update File 이면 덩어리."""
+    content = final
+    for kind, text, extra in reversed(ops):
+        res = extra.get("result") or {}
+        tool = extra.get("tool")
+        if tool == "patch":
+            if kind == "write":
+                return ""
+            content = reverse_hunks(content, extra.get("hunks") or [])
+        elif tool == "Write":
+            if res.get("type") == "update" and res.get("structuredPatch"):
+                content = reverse_patch(content, res["structuredPatch"])
+            else:
+                return ""               # 새로 만들었거나 결과가 없다. 쓴 내용 전체가 이번 턴 글이다
+        elif isinstance(res.get("originalFile"), str):
+            content = res["originalFile"]
+        elif res.get("structuredPatch"):
+            content = reverse_patch(content, res["structuredPatch"])
         else:
-            hints = None
-        body = hunk_body(whole, patch, hints)
-        if body is not None:
-            return body
-    masked = mask(whole)                                     # 마지막 수단: 같은 글이 있는 자리 중 가장 많이 지워진 자리
-    segs, i = [], whole.find(new)
-    while i >= 0:
-        segs.append(keep(masked[i:i + len(new)], spans))
-        i = whole.find(new, i + 1)
-    return min(segs, key=ink) if segs else ""
+            for old, new, every in reversed(extra.get("edits") or []):
+                if new not in content:
+                    return None
+                content = content.replace(new, old) if every else content.replace(new, old, 1)
+        if content is None:
+            return None
+    return content
+
+
+def file_targets(path, ops):
+    """이번 턴에 이 파일에서 바뀌어 지금 남아 있는 글. (문장 검사할 글, 원문) 목록."""
+    final = read_file(path)
+    if final is None:
+        return []                       # 지웠거나 옮겼다
+    base = turn_base(ops, final)
+    if base is not None:
+        spans = net_spans(base, final)
+        if not spans:
+            return []
+        return [(keep(mask(final), spans) if path.endswith(".md") else None, keep(final, spans))]
+    out = []                            # 되돌리지 못하면 수정마다 새 글의 달라진 범위만 본다(파일 문맥 없이)
+    for kind, text, extra in ops:
+        pairs = extra.get("edits") or [(None, text, False)]
+        for old, new, _ in pairs:
+            spans = changed_spans(old, new) if old else None
+            out.append((keep(mask(new), spans) if path.endswith(".md") else None, keep(new, spans)))
+    return out
 
 
 def escapes(text):
@@ -498,42 +513,30 @@ def snippet(text, m):
 
 
 def find(pieces):
-    hits = []
+    hits, files = [], {}
+    targets = []                       # (어디, 문장 검사할 글, 원문)
     for _, kind, path, text, cwd, extra in pieces:
-        if not text:
-            continue
-        targets = []                       # (어디, 문장 검사할 글, 원문)
-        if kind == "answer":
+        if kind == "answer" and text:
             targets.append(("답", mask(text), None))
-        elif kind in ("write", "edit"):
-            if skip_file(path):
-                continue
-            where = "파일 %s" % os.path.basename(path)
-            if kind == "write":                     # 같은 턴에 나중에 고쳤을 수 있으니 지금 파일로 본다
-                current = read_file(path)
-                raw = current if current is not None else text
-                body = mask(raw) if path.endswith(".md") else None
-            else:
-                raw = text
-                if extra.get("old"):
-                    whole = read_file(path)
-                    raw = keep(text, changed_spans(extra["old"], text)) if whole is not None and text in whole else ""
-                body = edit_body(path, text, extra) if path.endswith(".md") else None
-            targets.append((where, body, raw))
-        elif kind == "shell":
+        elif kind in ("write", "edit") and path and not skip_file(path):
+            files.setdefault(path, []).append((kind, text, extra))
+        elif kind == "shell" and text:
             for msg in commit_messages(text, cwd):
                 targets.append(("커밋 메시지", mask(msg), msg))
-        for where, body, raw in targets:
-            if body:
-                for label, rx in PROSE_CHECKS:
-                    for m in rx.finditer(body):
-                        hits.append("- %s: %s %s" % (where, label, snippet(body, m)))
-            if raw:
-                for m in escapes(raw):
-                    hits.append("- %s: 한글 이스케이프 %s" % (where, snippet(raw, m)))
-            if raw and where == "커밋 메시지":
-                for m in CREDIT.finditer(raw):
-                    hits.append("- %s: Claude 표기 %s" % (where, snippet(raw, m)))
+    for path, ops in files.items():
+        for body, raw in file_targets(path, ops):
+            targets.append(("파일 %s" % os.path.basename(path), body, raw))
+    for where, body, raw in targets:
+        if body:
+            for label, rx in PROSE_CHECKS:
+                for m in rx.finditer(body):
+                    hits.append("- %s: %s %s" % (where, label, snippet(body, m)))
+        if raw:
+            for m in escapes(raw):
+                hits.append("- %s: 한글 이스케이프 %s" % (where, snippet(raw, m)))
+        if raw and where == "커밋 메시지":
+            for m in CREDIT.finditer(raw):
+                hits.append("- %s: Claude 표기 %s" % (where, snippet(raw, m)))
     return list(dict.fromkeys(hits))           # 같은 지적은 한 번만
 
 

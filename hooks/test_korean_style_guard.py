@@ -63,6 +63,13 @@ class GuardTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def put(self, name, content):
+        """도구가 쓴 결과처럼 파일을 만든다. 훅은 Stop 때의 파일을 읽는다."""
+        path = self.dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return str(path)
+
     def run_guard(self, entries, session="s1", active=False):
         path = self.dir / ("%s.jsonl" % session)
         path.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in entries) + "\n", encoding="utf-8")
@@ -90,7 +97,8 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(out, {})
 
     def test_markdown_file_dash(self):
-        out = self.run_guard([prompt("써 줘"), tool("Write", file_path="/x/notes.md", content="제목 %s 부제" % DASH),
+        path = self.put("notes.md", "제목 %s 부제" % DASH)
+        out = self.run_guard([prompt("써 줘"), tool("Write", file_path=path, content="제목 %s 부제" % DASH),
                               answer("썼습니다.")])
         self.assertBlocked(out, "파일 notes.md: 줄표")
 
@@ -100,7 +108,8 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(out, {})
 
     def test_vocabulary_word_and_exceptions(self):
-        self.assertBlocked(self.run_guard([prompt("써"), tool("Write", file_path="/x/a.md", content="고아 노트를 정리")]),
+        path = self.put("a.md", "고아 노트를 정리")
+        self.assertBlocked(self.run_guard([prompt("써"), tool("Write", file_path=path, content="고아 노트를 정리")]),
                            "쓰지 않는 단어")
         mention = "금지어 「고아」와 줄표(%s), 예문 「제목 %s 부제」는 언급이다." % (DASH, DASH)
         self.assertEqual(self.run_guard([prompt("써"), answer(mention)], session="s2"), {})
@@ -109,10 +118,12 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(self.run_guard([prompt("써"), rules], session="s4"), {})
 
     def test_hangul_escape_in_any_file(self):
-        out = self.run_guard([prompt("써"), tool("Write", file_path="/x/a.json", content='{"t": "%s"}' % HANGUL_ESCAPE)])
+        path = self.put("a.json", '{"t": "%s"}' % HANGUL_ESCAPE)
+        out = self.run_guard([prompt("써"), tool("Write", file_path=path, content='{"t": "%s"}' % HANGUL_ESCAPE)])
         self.assertBlocked(out, "파일 a.json: 한글 이스케이프")
         other = "\\" + "u2014"                # 한글이 아닌 이스케이프는 넘긴다
-        self.assertEqual(self.run_guard([prompt("써"), tool("Write", file_path="/x/b.py", content=other)], session="s2"), {})
+        path = self.put("b.py", other)
+        self.assertEqual(self.run_guard([prompt("써"), tool("Write", file_path=path, content=other)], session="s2"), {})
 
     def test_commit_credit_line(self):
         cmd = "git commit -F - <<'EOF'\nfix: 고친다\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nEOF"
@@ -133,7 +144,8 @@ class GuardTests(unittest.TestCase):
 
     def test_codex_answer_and_patch(self):
         self.assertBlocked(self.run_guard([codex_meta(), codex_turn(), codex_answer("끝 %s 났다" % DASH)]), "답: 줄표")
-        js = 'text(await tools.apply_patch("*** Begin Patch\\n*** Add File: /x/notes.md\\n+**굵게**를 썼다\\n*** End Patch"))'
+        notes = self.put("notes.md", "**굵게**를 썼다\n")
+        js = 'text(await tools.apply_patch("*** Begin Patch\\n*** Add File: %s\\n+**굵게**를 썼다\\n*** End Patch"))' % notes
         self.assertBlocked(self.run_guard([codex_meta(), codex_turn(), codex_exec(js)], session="c2"),
                            "파일 notes.md: 굵게")
 
@@ -181,7 +193,8 @@ class GuardTests(unittest.TestCase):
 
     def test_escape_range_in_code_passes(self):
         a, b = "\\" + "u" + "ac00", "\\" + "u" + "d7a3"
-        out = self.run_guard([prompt("써"), tool("Write", file_path="/x/k.py", content="re.compile('[%s-%s]+')" % (a, b))])
+        path = self.put("k.py", "re.compile('[%s-%s]+')" % (a, b))
+        out = self.run_guard([prompt("써"), tool("Write", file_path=path, content="re.compile('[%s-%s]+')" % (a, b))])
         self.assertEqual(out, {})
 
     def test_edit_location_from_original_file(self):
@@ -280,6 +293,30 @@ class GuardTests(unittest.TestCase):
         out = self.run_guard([codex_meta(), codex_turn(), codex_exec("text(await tools.apply_patch(%s))" % js_string(patch))],
                              session="c2")
         self.assertBlocked(out, "파일 doc.md: 줄표")
+
+    def test_dash_kept_after_later_edit_on_same_line(self):
+        doc = self.dir / "doc.md"
+        doc.write_text("제목 %s 부제 새말\n" % DASH, encoding="utf-8")
+        first = ("제목 부제 옛말", "제목 %s 부제 옛말" % DASH)
+        second = ("옛말", "새말")
+        with_orig = [prompt("고쳐"),
+                     tool("Edit", "t1", file_path=str(doc), old_string=first[0], new_string=first[1]),
+                     result("t1", originalFile=first[0] + "\n", oldString=first[0], newString=first[1], structuredPatch=[]),
+                     tool("Edit", "t2", file_path=str(doc), old_string=second[0], new_string=second[1]),
+                     result("t2", originalFile=first[1] + "\n", oldString=second[0], newString=second[1], structuredPatch=[])]
+        self.assertBlocked(self.run_guard(with_orig), "파일 doc.md: 줄표")
+        without = [prompt("고쳐"), tool("Edit", file_path=str(doc), old_string=first[0], new_string=first[1]),
+                   tool("Edit", file_path=str(doc), old_string=second[0], new_string=second[1])]
+        self.assertBlocked(self.run_guard(without, session="s2"), "파일 doc.md: 줄표")
+
+    def test_write_update_checks_only_changed_lines(self):
+        doc = self.dir / "doc.md"
+        old_dash = "옛 줄 %s 그대로" % DASH
+        doc.write_text(old_dash + "\n새 줄\n", encoding="utf-8")
+        patch = [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": [" " + old_dash, "+새 줄"]}]
+        out = self.run_guard([prompt("써"), tool("Write", "t1", file_path=str(doc), content=old_dash + "\n새 줄\n"),
+                              result("t1", type="update", content=old_dash + "\n새 줄\n", structuredPatch=patch, originalFile=None)])
+        self.assertEqual(out, {})
 
 
 if __name__ == "__main__":
