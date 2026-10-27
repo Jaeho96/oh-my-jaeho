@@ -125,6 +125,48 @@ class GuardTests(unittest.TestCase):
                               codex_answer("깨끗합니다.")])
         self.assertEqual(out, {})
 
+    def test_edit_inside_existing_code_block_passes(self):
+        doc = self.dir / "doc.md"
+        doc.write_text('설명입니다.\n\n```python\nexample = "a %s b"\n```\n' % DASH, encoding="utf-8")
+        out = self.run_guard([prompt("고쳐"), tool("Edit", file_path=str(doc), old_string="x",
+                                                   new_string='example = "a %s b"' % DASH)])
+        self.assertEqual(out, {})
+
+    def test_edit_outside_code_block_is_checked_in_file(self):
+        doc = self.dir / "doc.md"
+        doc.write_text("```\ncode\n```\n제목 %s 부제\n" % DASH, encoding="utf-8")
+        out = self.run_guard([prompt("고쳐"), tool("Edit", file_path=str(doc), old_string="x", new_string="제목 %s 부제" % DASH)])
+        self.assertBlocked(out, "파일 doc.md: 줄표")
+
+    def test_git_C_commit_message_is_checked(self):
+        cmd = 'git -C /repo commit -m "feat: 기능 %s 고친다"' % DASH
+        self.assertBlocked(self.run_guard([prompt("커밋"), tool("Bash", command=cmd)]), "커밋 메시지: 줄표")
+
+    def test_other_command_after_commit_is_not_message(self):
+        cmd = "git commit -m \"fix: 정상\" && python3 -c 'print(\"고아 %s\")'" % DASH
+        self.assertEqual(self.run_guard([prompt("커밋"), tool("Bash", command=cmd)]), {})
+
+    def test_cat_heredoc_message_is_checked(self):
+        cmd = ("git commit -m \"$(cat <<'EOF'\nfix: 고친다\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\"\n"
+               "git log -1")
+        self.assertBlocked(self.run_guard([prompt("커밋"), tool("Bash", command=cmd)]), "커밋 메시지: Claude 표기")
+
+    def test_message_file_relative_to_C(self):
+        (self.dir / "msg.txt").write_text("fix: 줄표 %s 있음\n" % DASH, encoding="utf-8")
+        cmd = "git -C %s commit -F msg.txt" % self.dir
+        self.assertBlocked(self.run_guard([prompt("커밋"), tool("Bash", command=cmd)]), "커밋 메시지: 줄표")
+
+    def test_codex_exec_commit(self):
+        js = 'text(await tools.exec_command({cmd:"git -C /r commit -m \\"x %s y\\""}))' % DASH
+        self.assertBlocked(self.run_guard([codex_meta(), codex_turn(), codex_exec(js)]), "커밋 메시지: 줄표")
+        js2 = 'text(await tools.exec_command({cmd:"git status && echo 고아"}))'
+        self.assertEqual(self.run_guard([codex_meta(), codex_turn(), codex_exec(js2)], session="c2"), {})
+
+    def test_escape_range_in_code_passes(self):
+        a, b = "\\" + "u" + "ac00", "\\" + "u" + "d7a3"
+        out = self.run_guard([prompt("써"), tool("Write", file_path="/x/k.py", content="re.compile('[%s-%s]+')" % (a, b))])
+        self.assertEqual(out, {})
+
 
 if __name__ == "__main__":
     unittest.main()
