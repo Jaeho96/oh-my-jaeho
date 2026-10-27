@@ -484,11 +484,12 @@ def turn_base(ops, final):
             content = reverse_patch(content, res["structuredPatch"])
         else:
             for old, new, every in reversed(extra.get("edits") or []):
-                if not new or new not in content:
-                    return None             # 지우기만 한 수정은 자리를 모른다
+                if not new:
+                    continue                # 지우기만 한 수정은 자리를 모른다. 지운 글은 지금 파일에 없으니 건너뛴다
+                if new not in content:
+                    return None
                 if every:
-                    content = content.replace(new, old)
-                    continue
+                    return None             # 원래 있던 같은 글까지 되돌리게 되니 자리를 모르는 것으로 본다
                 spots, i = [], content.find(new)
                 while i >= 0:
                     spots.append(i)
@@ -512,14 +513,21 @@ def file_targets(path, ops):
         if not spans:
             return []
         return [(keep(mask(final), spans) if path.endswith(".md") else None, keep(final, spans))]
-    out = []                            # 되돌리지 못하면 수정마다 새 글의 달라진 범위만 본다. 지금 파일에 남은 글만
+    out = []                            # 되돌리지 못하면 수정마다 새 글이 지금 파일에 있는 자리를 찾아 파일 전체 기준으로 본다
+    masked = mask(final)
     for kind, text, extra in ops:
         pairs = extra.get("edits") or [(None, text, False)]
         for old, new, _ in pairs:
-            if not new or new not in final:
-                continue
+            spots, i = [], final.find(new) if new else -1
+            while i >= 0:
+                spots.append(i)
+                i = final.find(new, i + 1)
+            if not spots:
+                continue                # 지금 파일에 없다(뒤에 고쳤거나 지웠다)
             spans = changed_spans(old, new) if old else None
-            out.append((keep(mask(new), spans) if path.endswith(".md") else None, keep(new, spans)))
+            at = min(spots, key=lambda x: ink(keep(masked[x:x + len(new)], spans)))   # 여러 자리면 코드 안 쪽(오탐 피하기)
+            out.append((keep(masked[at:at + len(new)], spans) if path.endswith(".md") else None,
+                        keep(final[at:at + len(new)], spans)))
     return out
 
 

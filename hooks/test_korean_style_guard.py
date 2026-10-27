@@ -340,6 +340,35 @@ class GuardTests(unittest.TestCase):
                         result("t2", originalFile="제목" + bad + "\n", structuredPatch=[])]
         self.assertEqual(self.run_guard(with_results, session="s2"), {})
 
+    def test_code_edit_with_unplaced_deletion(self):
+        doc = self.dir / "doc.md"
+        line = "x %s y" % DASH
+        doc.write_text("```\n%s\n```\n" % line, encoding="utf-8")     # 제목 줄은 지웠다
+        out = self.run_guard([prompt("코드를 고치고 제목을 지워 줘"),
+                              tool("Edit", file_path=str(doc), old_string="x old y", new_string=line),
+                              tool("Edit", file_path=str(doc), old_string="제목\n", new_string="")])
+        self.assertEqual(out, {})
+
+    def test_fallback_keeps_file_context(self):
+        doc = self.dir / "doc.md"
+        line = "x %s y" % DASH
+        doc.write_text("```\n%s\n```\n" % line, encoding="utf-8")
+        # 되돌릴 수 없는 기록(새 글이 지금 파일에 없는 수정이 뒤에 있다)이어도 코드 블록 안 글은 문장으로 보지 않는다
+        out = self.run_guard([prompt("고쳐"), tool("Edit", file_path=str(doc), old_string="x old y", new_string=line),
+                              tool("Edit", file_path=str(doc), old_string="없는 글", new_string="사라진 글")])
+        self.assertEqual(out, {})
+        doc.write_text("본문 %s 끝\n" % DASH, encoding="utf-8")
+        out = self.run_guard([prompt("고쳐"), tool("Edit", file_path=str(doc), old_string="본문 끝", new_string="본문 %s 끝" % DASH),
+                              tool("Edit", file_path=str(doc), old_string="없는 글", new_string="사라진 글")], session="s2")
+        self.assertBlocked(out, "파일 doc.md: 줄표")
+
+    def test_replace_all_without_result_keeps_existing_text(self):
+        doc = self.dir / "doc.md"
+        line = "A %s B" % DASH
+        doc.write_text("%s\n```\n%s\n```\n" % (line, line), encoding="utf-8")   # 본문 줄은 원래 있던 글
+        out = self.run_guard([prompt("고쳐"), tool("Edit", file_path=str(doc), old_string="X", new_string=line, replace_all=True)])
+        self.assertEqual(out, {})
+
 
 if __name__ == "__main__":
     unittest.main()
