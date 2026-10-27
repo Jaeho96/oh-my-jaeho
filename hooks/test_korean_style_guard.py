@@ -234,6 +234,53 @@ class GuardTests(unittest.TestCase):
         cmd = "cd %s && git commit -F msg.txt" % other
         self.assertBlocked(self.run_guard([prompt("커밋"), tool("Bash", command=cmd)], session="s2"), "커밋 메시지: 줄표")
 
+    def test_fixed_later_in_same_turn_passes(self):
+        doc = self.dir / "doc.md"
+        bad, good = "문장 %s 수정" % DASH, "문장 수정"
+        doc.write_text(good + "\n", encoding="utf-8")
+        out = self.run_guard([prompt("고쳐"),
+                              tool("Edit", "t1", file_path=str(doc), old_string="문장 옛", new_string=bad),
+                              result("t1", originalFile="문장 옛\n", oldString="문장 옛", newString=bad, structuredPatch=[]),
+                              tool("Edit", "t2", file_path=str(doc), old_string=bad, new_string=good),
+                              result("t2", originalFile=bad + "\n", oldString=bad, newString=good, structuredPatch=[])])
+        self.assertEqual(out, {})
+        out = self.run_guard([prompt("써"), tool("Write", file_path=str(doc), content=bad + "\n"),
+                              tool("Edit", file_path=str(doc), old_string=bad, new_string=good)], session="s2")
+        self.assertEqual(out, {})
+
+    def test_untouched_part_of_changed_line_passes(self):
+        doc = self.dir / "doc.md"
+        line = "기존 %s 문장 새말" % DASH
+        doc.write_text(line + "\n", encoding="utf-8")
+        patch = [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+                  "lines": ["-기존 %s 문장 옛말" % DASH, "+" + line]}]
+        out = self.run_guard([prompt("고쳐"), tool("Edit", "t1", file_path=str(doc), old_string="옛말", new_string="새말"),
+                              result("t1", originalFile=None, structuredPatch=patch)])
+        self.assertEqual(out, {})
+        old = "기존 %s 문장 옛말" % DASH                     # Edit 는 앞뒤 글까지 함께 넘기는 일이 많다
+        out = self.run_guard([prompt("고쳐"), tool("Edit", "t2", file_path=str(doc), old_string=old, new_string=line),
+                              result("t2", originalFile=old + "\n", oldString=old, newString=line, structuredPatch=[])],
+                             session="s2")
+        self.assertEqual(out, {})
+        doc.write_text("제목 %s 부제\n" % DASH, encoding="utf-8")   # 새로 넣은 줄표는 잡는다
+        out = self.run_guard([prompt("고쳐"), tool("Edit", "t3", file_path=str(doc), old_string="제목 부제",
+                                                    new_string="제목 %s 부제" % DASH),
+                              result("t3", originalFile="제목 부제\n", oldString="제목 부제",
+                                     newString="제목 %s 부제" % DASH, structuredPatch=[])], session="s3")
+        self.assertBlocked(out, "파일 doc.md: 줄표")
+
+    def test_codex_partial_line_change(self):
+        doc = self.dir / "doc.md"
+        doc.write_text("기존 %s 문장 새말\n" % DASH, encoding="utf-8")
+        patch = "*** Begin Patch\n*** Update File: %s\n@@\n-기존 %s 문장 옛말\n+기존 %s 문장 새말\n*** End Patch" % (doc, DASH, DASH)
+        out = self.run_guard([codex_meta(), codex_turn(), codex_exec("text(await tools.apply_patch(%s))" % js_string(patch))])
+        self.assertEqual(out, {})
+        doc.write_text("제목 %s 부제\n" % DASH, encoding="utf-8")
+        patch = "*** Begin Patch\n*** Update File: %s\n@@\n-제목 부제\n+제목 %s 부제\n*** End Patch" % (doc, DASH)
+        out = self.run_guard([codex_meta(), codex_turn(), codex_exec("text(await tools.apply_patch(%s))" % js_string(patch))],
+                             session="c2")
+        self.assertBlocked(out, "파일 doc.md: 줄표")
+
 
 if __name__ == "__main__":
     unittest.main()

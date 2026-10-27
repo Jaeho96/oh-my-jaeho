@@ -26,6 +26,7 @@
 환경 변수: STYLE_GUARD_STATE(기본 ~/.omj/style-guard.json)
 Python 3.9 에서도 돈다(Codex 와 데스크톱 앱이 시스템 python3 로 훅을 부른다).
 """
+import difflib
 import json
 import os
 import re
@@ -379,24 +380,63 @@ def ink(s):
     return len(re.sub(r"\s", "", s))
 
 
+def changed_spans(old, new):
+    """new 에서 old 와 달라진 범위. 공백까지 넓혀 단어 단위로 돌려준다. 손대지 않은 글의 위반은 이번 수정 탓이 아니다."""
+    spans = []
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=len(new) > 5000)
+    for tag, _, _, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        a, b = j1, j2
+        while a > 0 and not new[a - 1].isspace():
+            a -= 1
+        while b < len(new) and not new[b].isspace():
+            b += 1
+        spans.append((a, b))
+    return spans
+
+
+def keep(text, spans):
+    """spans 밖 글자를 공백으로 지운다(줄바꿈은 남긴다). spans 가 None 이면 그대로."""
+    if spans is None:
+        return text
+    out = [c if c == "\n" else " " for c in text]
+    for a, b in spans:
+        out[a:b] = text[a:b]
+    return "".join(out)
+
+
+def hunk_changes(hunk):
+    """덩어리에서 (문맥 + 더한 줄) 목록과, 더한 줄마다 달라진 범위. 바로 앞에서 뺀 줄과 짝지어 비교한다."""
+    kept, spans, removed = [], {}, []
+    for l in hunk:
+        if l.startswith("-"):
+            removed.append(l[1:])
+        elif l.startswith("+"):
+            spans[len(kept)] = changed_spans(removed.pop(0), l[1:]) if removed else [(0, len(l) - 1)]
+            kept.append(l[1:])
+        else:
+            removed = []
+            kept.append(l[1:])
+    return kept, spans
+
+
 def hunk_body(whole, hunks, hints=None):
-    """덩어리(문맥 + 더한 줄)를 파일에서 찾아 더한 줄만 지운(mask) 글로 돌려준다. 하나도 못 찾으면 None.
+    """덩어리를 지금 파일에서 찾아, 더한 줄의 달라진 범위만 지운(mask) 글로 돌려준다. 하나도 못 찾으면 None.
     여러 자리에 있으면 줄 번호 힌트에 가장 가까운 자리, 힌트가 없으면 가장 많이 지워진 자리를 고른다."""
     lines = whole.split("\n")
     masked = mask(whole).split("\n")
     parts, found = [], False
     for k, hunk in enumerate(hunks):
-        kept = [l for l in hunk if l[:1] in (" ", "+")]
-        block = [l[1:] for l in kept]
-        added = [i for i, l in enumerate(kept) if l.startswith("+")]
-        if not block or not added:
+        block, spans = hunk_changes(hunk)
+        if not block or not spans:
             continue
         starts = [s for s in range(len(lines) - len(block) + 1)
                   if lines[s] == block[0] and lines[s:s + len(block)] == block]
         if not starts:
             continue
         found = True
-        segs = {s: [masked[s + i] for i in added] for s in starts}
+        segs = {s: [keep(masked[s + i], spans[i]) for i in sorted(spans)] for s in starts}
         hint = hints[k] if hints and k < len(hints) else None
         s = min(starts, key=lambda x: abs(x - hint)) if hint is not None else min(starts, key=lambda x: ink("".join(segs[x])))
         parts += segs[s]
@@ -404,9 +444,17 @@ def hunk_body(whole, hunks, hints=None):
 
 
 def edit_body(path, new, extra):
-    """Edit · 패치로 새로 쓴 글을, 실제로 바뀐 자리에서 파일 전체 기준으로 지운(mask) 글."""
+    """Edit · 패치로 새로 쓴 글 가운데 실제로 바뀌어 지금 파일에 남은 부분만, 파일 전체 기준으로 지운(mask) 글."""
+    whole = read_file(path)
+    if whole is None:
+        return ""                                            # 파일이 없다(지웠거나 옮겼다)
     res = extra.get("result") or {}
     orig, old = res.get("originalFile"), extra.get("old")
+    spans = None
+    if old:
+        if new not in whole:
+            return ""                                        # 같은 턴에 다시 고쳐 지금 파일에 없다. 그 뒤 수정이 따로 검사된다
+        spans = changed_spans(old, new)
     if isinstance(orig, str) and old and old in orig:         # 수정 직전 파일에 그 수정을 다시 적용해 자리를 안다
         starts, i, shift = [], orig.find(old), 0
         while i >= 0:
@@ -417,10 +465,7 @@ def edit_body(path, new, extra):
             i = orig.find(old, i + len(old))
         post = orig.replace(old, new) if extra.get("all") else orig.replace(old, new, 1)
         masked = mask(post)
-        return "\n".join(masked[s:s + len(new)] for s in starts)
-    whole = read_file(path)
-    if whole is None:
-        return mask(new)
+        return "\n".join(keep(masked[s:s + len(new)], spans) for s in starts)
     patch = res.get("structuredPatch") or extra.get("hunks")
     if patch:
         if isinstance(patch[0], dict):                       # Claude: 줄 번호(newStart)가 있다
@@ -434,7 +479,7 @@ def edit_body(path, new, extra):
     masked = mask(whole)                                     # 마지막 수단: 같은 글이 있는 자리 중 가장 많이 지워진 자리
     segs, i = [], whole.find(new)
     while i >= 0:
-        segs.append(masked[i:i + len(new)])
+        segs.append(keep(masked[i:i + len(new)], spans))
         i = whole.find(new, i + 1)
     return min(segs, key=ink) if segs else ""
 
@@ -464,10 +509,17 @@ def find(pieces):
             if skip_file(path):
                 continue
             where = "파일 %s" % os.path.basename(path)
-            body = None
-            if path.endswith(".md"):
-                body = mask(text) if kind == "write" else edit_body(path, text, extra)
-            targets.append((where, body, text))
+            if kind == "write":                     # 같은 턴에 나중에 고쳤을 수 있으니 지금 파일로 본다
+                current = read_file(path)
+                raw = current if current is not None else text
+                body = mask(raw) if path.endswith(".md") else None
+            else:
+                raw = text
+                if extra.get("old"):
+                    whole = read_file(path)
+                    raw = keep(text, changed_spans(extra["old"], text)) if whole is not None and text in whole else ""
+                body = edit_body(path, text, extra) if path.endswith(".md") else None
+            targets.append((where, body, raw))
         elif kind == "shell":
             for msg in commit_messages(text, cwd):
                 targets.append(("커밋 메시지", mask(msg), msg))
@@ -482,7 +534,7 @@ def find(pieces):
             if raw and where == "커밋 메시지":
                 for m in CREDIT.finditer(raw):
                     hits.append("- %s: Claude 표기 %s" % (where, snippet(raw, m)))
-    return hits
+    return list(dict.fromkeys(hits))           # 같은 지적은 한 번만
 
 
 def load_state():
