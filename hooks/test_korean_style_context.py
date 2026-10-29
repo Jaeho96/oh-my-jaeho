@@ -1,4 +1,5 @@
 """korean_style_context.py 시험. 링크로 불러도 레포 지침을 찾고, 길면 자르고, 원본이 없어도 조용히 끝나는지 본다."""
+import json
 import os
 import subprocess
 import sys
@@ -10,13 +11,29 @@ HERE = Path(__file__).resolve().parent
 HOOK = HERE / "korean_style_context.py"
 
 
-def run(path, **env):
+def run(path, stdin="", **env):
     full = dict(os.environ, **env)
-    p = subprocess.run([sys.executable, str(path)], capture_output=True, text=True, env=full, timeout=10)
+    p = subprocess.run([sys.executable, str(path)], input=stdin, capture_output=True, text=True, env=full, timeout=10)
     return p.returncode, p.stdout
 
 
+def rollout(directory, name, originator):
+    """세션 시작 때의 rollout. 실제로 이때는 첫 줄(session_meta)만 있다(2026-10-29 확인)."""
+    path = Path(directory) / name
+    path.write_text(json.dumps({"type": "session_meta", "payload": {"originator": originator}}) + "\n", encoding="utf-8")
+    return json.dumps({"hook_event_name": "SessionStart", "source": "startup", "transcript_path": str(path)})
+
+
 class KoreanStyleHookTests(unittest.TestCase):
+    def test_skips_session_started_by_claude_code(self):
+        with tempfile.TemporaryDirectory() as d:
+            code, out = run(HOOK, stdin=rollout(d, "review.jsonl", "Claude Code"))
+            self.assertEqual((code, out), (0, ""))
+            code, out = run(HOOK, stdin=rollout(d, "mine.jsonl", "codex_cli_rs"))
+            self.assertIn("# 한국어로 쓰기", out)                       # 사용자가 연 세션에는 넣는다
+            code, out = run(HOOK, stdin=json.dumps({"transcript_path": str(Path(d) / "none.jsonl")}))
+            self.assertIn("# 한국어로 쓰기", out)                       # rollout 이 없으면 넣는다
+
     def test_prints_both_rule_files(self):
         code, out = run(HOOK)
         self.assertEqual(code, 0)

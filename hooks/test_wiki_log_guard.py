@@ -22,6 +22,14 @@ def codex_line(name, text):
     return {"type": "response_item", "payload": {"type": "custom_tool_call", "name": name, "input": text}}
 
 
+def codex_task(text):
+    return {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                                 "content": [{"type": "input_text", "text": text}]}}
+
+
+REVIEW_TASK = "<task>\nRun a stop-gate review of the previous Claude turn.\nOnly review the work from the previous Claude turn.\n"
+
+
 class GuardTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -29,9 +37,9 @@ class GuardTests(unittest.TestCase):
         self.dir = Path(self.tmp.name)
         self.env = dict(os.environ, WIKI_GUARD_STATE=str(self.dir / "state.json"), HOME=str(self.dir))
 
-    def run_hook(self, rows, codex=False, active=False, session="s1"):
+    def run_hook(self, rows, codex=False, active=False, session="s1", meta=None):
         path = self.dir / ("%s.jsonl" % session)
-        head = [{"type": "session_meta", "payload": {}}] if codex else []
+        head = [{"type": "session_meta", "payload": meta or {}}] if codex else []
         path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in head + rows) + "\n", encoding="utf-8")
         p = subprocess.run([sys.executable, str(HERE / "wiki_log_guard.py")], env=self.env, capture_output=True, text=True,
                            input=json.dumps({"session_id": session, "transcript_path": str(path), "stop_hook_active": active}))
@@ -58,11 +66,28 @@ class GuardTests(unittest.TestCase):
         rows = self.edits() + [claude_line("tool", name="Bash", input={"command": "cat \"%s/old.md\"" % RAW})]
         self.assertEqual(self.run_hook(rows).get("decision"), "block")
 
-    def test_few_reads_pass_many_calls_block(self):
-        reads = [claude_line("prompt", text="찾아줘")] + [claude_line("tool", name="Read", input={"file_path": "/a"})] * 3
+    def test_reads_only_ask_from_twenty_calls(self):
+        # 파일을 고치지 않은 턴은 도구 호출 20회부터 묻는다(2026-10-29, 8 → 20)
+        reads = [claude_line("prompt", text="찾아줘")] + [claude_line("tool", name="Read", input={"file_path": "/a"})] * 19
         self.assertEqual(self.run_hook(reads, session="r1"), {})
-        many = [claude_line("prompt", text="조사해줘")] + [claude_line("tool", name="Read", input={"file_path": "/a"})] * 8
+        many = [claude_line("prompt", text="조사해줘")] + [claude_line("tool", name="Read", input={"file_path": "/a"})] * 20
         self.assertEqual(self.run_hook(many, session="r2").get("decision"), "block")
+
+    def test_codex_stop_review_passes(self):
+        patch = codex_line("exec", 'tools.apply_patch("*** Begin Patch\\n*** Update File: /repo/a.py")')
+        claude = {"originator": "Claude Code"}
+        self.assertEqual(self.run_hook([codex_task(REVIEW_TASK), patch], codex=True, session="v1", meta=claude), {})
+        # 같은 플러그인으로 맡긴 작업(검토 프롬프트 없음)은 그대로 묻는다
+        self.assertEqual(self.run_hook([codex_task("고쳐줘"), patch], codex=True, session="v2", meta=claude).get("decision"),
+                         "block")
+        # 사용자가 연 Codex 세션은 검토 문구가 있어도 묻는다
+        mine = {"originator": "codex_cli_rs"}
+        self.assertEqual(self.run_hook([codex_task(REVIEW_TASK), patch], codex=True, session="v3", meta=mine).get("decision"),
+                         "block")
+        # 맡긴 작업이 검토 문구가 든 파일을 고쳐도 검토 세션으로 보지 않는다
+        quoted = codex_line("exec", 'tools.apply_patch("*** Update File: /repo/hook.py\\n+%s")' % REVIEW_TASK.splitlines()[1])
+        rows = [codex_task("훅 고쳐줘. 검토 프롬프트는 %s 로 시작한다" % REVIEW_TASK.splitlines()[1]), quoted]
+        self.assertEqual(self.run_hook(rows, codex=True, session="v4", meta=claude).get("decision"), "block")
 
     def test_scheduled_session_passes(self):
         rows = [claude_line("prompt", text='<scheduled-task name="cc-gap-check">')] + self.edits()[1:]

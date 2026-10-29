@@ -149,6 +149,21 @@ class GuardTests(unittest.TestCase):
     def test_scheduled_session_passes(self):
         self.assertEqual(self.run_guard([prompt("<scheduled-task name='x'>"), answer("a %s b" % DASH)]), {})
 
+    def test_codex_stop_review_passes(self):
+        meta = {"type": "session_meta", "payload": {"id": "s", "cwd": "/repo", "originator": "Claude Code"}}
+        task = {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "<task>\nRun a stop-gate review of the previous Claude turn.\n</task>"}]}}
+        self.assertEqual(self.run_guard([meta, codex_turn(), task, codex_answer("끝 %s 났다" % DASH)]), {})
+        # 검토 프롬프트가 없으면(같은 플러그인으로 맡긴 작업) 그대로 검사한다
+        self.assertBlocked(self.run_guard([meta, codex_turn(), codex_answer("끝 %s 났다" % DASH)], session="r2"), "답: 줄표")
+        # 맡긴 작업의 지시나 도구 출력에 검토 문구가 들어 있어도 검토 세션으로 보지 않는다
+        work = {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "훅을 고쳐줘. 판별 문구는 Run a stop-gate review of the previous Claude turn. 이다"}]}}
+        out = {"type": "response_item", "payload": {"type": "function_call_output",
+                                                    "output": "<task>\nRun a stop-gate review of the previous Claude turn.\n"}}
+        self.assertBlocked(self.run_guard([meta, codex_turn(), work, out, codex_answer("끝 %s 났다" % DASH)], session="r3"),
+                           "답: 줄표")
+
     def test_codex_answer_and_patch(self):
         self.assertBlocked(self.run_guard([codex_meta(), codex_turn(), codex_answer("끝 %s 났다" % DASH)]), "답: 줄표")
         notes = self.put("notes.md", "**굵게**를 썼다\n")

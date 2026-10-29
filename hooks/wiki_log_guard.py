@@ -4,13 +4,16 @@
 마지막 위키 기록 이후 파일을 고쳤거나 도구를 여러 번 썼는데 raw/ 기록이 없으면, 끝내지 말고 기록하라고 되돌려 보낸다.
 - 같은 작업 묶음에는 한 번만 묻는다 — 세션마다 어디까지 물었는지 적어 둔다.
 - 예약 작업 세션(첫 지시가 <scheduled-task)과 이미 한 번 되돌린 턴(stop_hook_active)은 통과시킨다.
+- 파일을 고치지 않았으면 도구를 MIN_CALLS 번 이상 썼을 때만 묻는다. 2026-10-20~29 Claude Code 세션에서 이 훅이 막은
+  50건 중 26건이 파일을 고치지 않은 턴이었고, 그중 22건이 도구 호출 20회 미만이었다(2026-10-29 사용자 결정으로 8 → 20).
+- Claude Code 의 codex 플러그인이 턴 끝마다 띄우는 Codex 종료 검토 세션은 통과시킨다. 검토만 하는 세션이라 남길 기록이 없다.
 - 기록할 만한 일이 아니었으면 모델이 이유를 한 줄 말하고 끝낼 수 있다.
 - 이 세션이 쓴 기록의 파일명 시각이 저장한 시각보다 늦으면 되돌려 보낸다 — 시각을 짐작해 쓴 것이다.
   2026-10-23 점검에서 Claude Code 기록 108건 중 33건이 실제보다 최대 34분 늦은 이름이었다.
   지난번 확인 뒤에 쓴 기록 중 MAX_AGE 안에 저장된 것만 본다. 이미 올라가 링크가 걸린 옛 기록의 이름을 바꾸게 하면 안 된다.
 - 오류가 나면 언제나 통과시킨다. 훅 고장이 작업 종료를 막으면 안 된다.
 
-환경 변수: WIKI_RAW_DIR(기본 ~/Documents/Obsidian Vault/LLM Wiki/raw) · WIKI_GUARD_MIN_CALLS(기본 8)
+환경 변수: WIKI_RAW_DIR(기본 ~/Documents/Obsidian Vault/LLM Wiki/raw) · WIKI_GUARD_MIN_CALLS(기본 20)
           · WIKI_GUARD_STATE(기본 ~/.omj/wiki-guard.json) · WIKI_GUARD_AHEAD_SEC(기본 120) · WIKI_GUARD_MAX_AGE_SEC(기본 1800)
 Python 3.9 에서도 돈다(데스크톱 앱이 시스템 python3 로 훅을 부를 수 있다).
 """
@@ -22,7 +25,7 @@ import sys
 
 RAW_DIR = os.path.expanduser(os.environ.get("WIKI_RAW_DIR", "~/Documents/Obsidian Vault/LLM Wiki/raw"))
 RAW_MARK = os.path.basename(os.path.dirname(RAW_DIR.rstrip("/"))) + "/" + os.path.basename(RAW_DIR.rstrip("/")) + "/"
-MIN_CALLS = int(os.environ.get("WIKI_GUARD_MIN_CALLS", "8"))
+MIN_CALLS = int(os.environ.get("WIKI_GUARD_MIN_CALLS", "20"))
 STATE = os.path.expanduser(os.environ.get("WIKI_GUARD_STATE", "~/.omj/wiki-guard.json"))
 AHEAD_SEC = int(os.environ.get("WIKI_GUARD_AHEAD_SEC", "120"))
 MAX_AGE = int(os.environ.get("WIKI_GUARD_MAX_AGE_SEC", "1800"))
@@ -31,6 +34,34 @@ EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 MCP_WRITE = re.compile(r"(create|update|save|delete|send|publish|execute|move|upload|archive|trash|share|write|patch)", re.I)
 SHELL_WRITE = re.compile(r"(>|\btee\b|\*\*\* (Add|Update) File|writeFile|write_text|\bcp\b|\bmv\b)")
 CODEX_EDIT = re.compile(r"apply_patch|\*\*\* (Add|Update|Delete) File")
+REVIEW_MARK = "Run a stop-gate review of the previous Claude turn."   # codex 플러그인 prompts/stop-review-gate.md 첫 줄
+REVIEW_PROMPT = re.compile(r"\s*<task>\s*" + re.escape(REVIEW_MARK))
+
+
+def claude_stop_review(lines):
+    """Claude Code 의 codex 플러그인이 띄운 Codex 종료 검토 세션인가.
+
+    rollout 첫 줄 session_meta 의 originator 가 「Claude Code」이고, 사용자 메시지 하나가 검토 프롬프트
+    (「<task>」 다음 줄이 REVIEW_MARK)로 시작하면 그렇다. 같은 플러그인으로 맡긴 작업이 이 문구가 든 파일을
+    읽거나 고쳐도(도구 출력 · 패치 · 지시문 중간) 검토 세션으로 보지 않는다.
+    """
+    try:
+        if json.loads(lines[0]).get("payload", {}).get("originator") != "Claude Code":
+            return False
+    except (IndexError, ValueError, AttributeError):
+        return False
+    for line in lines[1:]:
+        if REVIEW_MARK not in line:
+            continue
+        try:
+            p = json.loads(line).get("payload") or {}
+        except (ValueError, AttributeError):
+            continue
+        if p.get("type") == "message" and p.get("role") == "user":
+            for c in p.get("content") or []:
+                if isinstance(c, dict) and REVIEW_PROMPT.match(c.get("text") or ""):
+                    return True
+    return False
 
 
 def claude_events(lines):
@@ -163,6 +194,8 @@ def main():
     with open(path, encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
     codex = any('"type":"session_meta"' in l.replace(" ", "") for l in lines[:3])
+    if codex and claude_stop_review(lines):
+        return {}
     key = data.get("session_id") or path
     state = load_state()
     events = list((codex_events if codex else claude_events)(lines))

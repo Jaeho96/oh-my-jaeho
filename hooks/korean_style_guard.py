@@ -19,6 +19,7 @@
 - 같은 사용자 지시 안에서는 한 번만 되돌린다. 세션마다 마지막으로 되돌린 줄을 적어 두고, 그 줄이 지금 지시 뒤면 통과시킨다.
   stop_hook_active 만 보고 통과시키지 않는다. 그 값은 다른 Stop 훅(위키 기록 확인, Codex 검토)이 되돌려도 켜져서,
   그 뒤에 이어 쓴 글을 하나도 못 보게 된다. 예약 작업 세션은 통과.
+- Claude Code 의 codex 플러그인이 턴 끝마다 띄우는 Codex 종료 검토 세션은 통과. 그 답은 Claude 가 읽는 판정이다(2026-10-29).
 - 남의 글 인용처럼 고치면 안 되는 것이면 모델이 이유를 한 줄 말하고 끝낼 수 있다.
 - 오류가 나면 언제나 통과시킨다. 훅 고장이 작업 종료를 막으면 안 된다.
 
@@ -37,6 +38,8 @@ import sys
 STATE = os.path.expanduser(os.environ.get("STYLE_GUARD_STATE", "~/.omj/style-guard.json"))
 MAX_HITS = 8
 SKIP_FILES = {("rules", "vocabulary.md"), ("rules", "korean-style.md")}
+REVIEW_MARK = "Run a stop-gate review of the previous Claude turn."   # codex 플러그인 prompts/stop-review-gate.md 첫 줄
+REVIEW_PROMPT = re.compile(r"\s*<task>\s*" + re.escape(REVIEW_MARK))
 
 BOLD = re.compile(r"\*\*(?=[^*\n]*[가-힣])[^*\n]+\*\*|\*\*[^*\n]+\*\*(?=[가-힣])")
 DASH = re.compile("[—―]")
@@ -657,12 +660,40 @@ def pieces_of(lines):
     return list((codex_pieces if codex else claude_pieces)(lines))
 
 
+def claude_stop_review(lines):
+    """Claude Code 의 codex 플러그인이 띄운 Codex 종료 검토 세션인가.
+
+    rollout 첫 줄 session_meta 의 originator 가 「Claude Code」이고, 사용자 메시지 하나가 검토 프롬프트
+    (「<task>」 다음 줄이 REVIEW_MARK)로 시작하면 그렇다. 같은 플러그인으로 맡긴 작업이 이 문구가 든 파일을
+    읽거나 고쳐도(도구 출력 · 패치 · 지시문 중간) 검토 세션으로 보지 않는다.
+    """
+    try:
+        if json.loads(lines[0]).get("payload", {}).get("originator") != "Claude Code":
+            return False
+    except (IndexError, ValueError, AttributeError):
+        return False
+    for line in lines[1:]:
+        if REVIEW_MARK not in line:
+            continue
+        try:
+            p = json.loads(line).get("payload") or {}
+        except (ValueError, AttributeError):
+            continue
+        if p.get("type") == "message" and p.get("role") == "user":
+            for c in p.get("content") or []:
+                if isinstance(c, dict) and REVIEW_PROMPT.match(c.get("text") or ""):
+                    return True
+    return False
+
+
 def main():
     data = json.loads(sys.stdin.read() or "{}")
     path = data.get("transcript_path")
     if not path or not os.path.isfile(path):
         return {}
     lines = read_lines(path)
+    if claude_stop_review(lines):
+        return {}
     pieces = pieces_of(lines)
     if any(p[1] == "scheduled" for p in pieces):
         return {}
