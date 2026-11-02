@@ -12,9 +12,14 @@
   2026-10-23 점검에서 Claude Code 기록 108건 중 33건이 실제보다 최대 34분 늦은 이름이었다.
   지난번 확인 뒤에 쓴 기록 중 MAX_AGE 안에 저장된 것만 본다. 이미 올라가 링크가 걸린 옛 기록의 이름을 바꾸게 하면 안 된다.
 - 오류가 나면 언제나 통과시킨다. 훅 고장이 작업 종료를 막으면 안 된다.
+- 기록을 셀 때 Write · Edit 와 MCP 는 경로 글자로, 셸은 시간으로 본다. 셸 호출이 시작해서 결과가 돌아오기까지
+  raw/ 기록 파일이 바뀌었고 명령에 raw 라는 낱말이 있으면 그 호출이 쓴 기록이다. 경로를 변수로 조립해도 센다.
+  예전에는 셸 명령에 "LLM Wiki/raw/" 가 글자 그대로 있어야만 세서, 같은 일로 다섯 번 잘못 막았다
+  (2026-10-22 · 10-29 · 11-02). 시간으로 이 세션에 묶이므로 다른 세션 · 다른 맥이 쓴 기록은 세지 않는다.
 
 환경 변수: WIKI_RAW_DIR(기본 ~/Documents/Obsidian Vault/LLM Wiki/raw) · WIKI_GUARD_MIN_CALLS(기본 20)
           · WIKI_GUARD_STATE(기본 ~/.omj/wiki-guard.json) · WIKI_GUARD_AHEAD_SEC(기본 120) · WIKI_GUARD_MAX_AGE_SEC(기본 1800)
+          · WIKI_GUARD_WINDOW_SLACK_SEC(기본 2, 셸 호출 시간 앞뒤 여유)
 Python 3.9 에서도 돈다(데스크톱 앱이 시스템 python3 로 훅을 부를 수 있다).
 """
 import datetime
@@ -36,6 +41,17 @@ SHELL_WRITE = re.compile(r"(>|\btee\b|\*\*\* (Add|Update) File|writeFile|write_t
 CODEX_EDIT = re.compile(r"apply_patch|\*\*\* (Add|Update|Delete) File")
 REVIEW_MARK = "Run a stop-gate review of the previous Claude turn."   # codex 플러그인 prompts/stop-review-gate.md 첫 줄
 REVIEW_PROMPT = re.compile(r"\s*<task>\s*" + re.escape(REVIEW_MARK))
+
+# 셸로 쓴 기록은 명령 글자가 아니라 시간으로 센다. 명령에 "LLM Wiki/raw/" 가 그대로 있어야만
+# 세던 탓에, 경로를 변수로 조립한 기록을 다섯 번 못 셌다(2026-10-22 · 10-29 · 11-02).
+# 글자 맞추기를 넓혀도 다른 적는 법에서 또 깨진다. 그래서 셸 호출이 시작해서 결과가 돌아오기까지
+# 사이에 raw/ 의 기록 파일이 바뀌었으면 그 호출이 쓴 것으로 본다. 시간으로 이 세션에 묶이므로
+# 다른 세션 · 다른 맥(wiki_sync 가 받아 온 것)이 쓴 기록은 세지 않는다.
+# 명령에 raw 라는 낱말이 있어야 후보로 본다. 오래 도는 명령(예: codex exec) 동안 다른 쪽이
+# 쓴 기록을 내 것으로 세지 않기 위해서다.
+RAW_FILE = re.compile(r"^\d{8}T\d{6}-.+\.md$")
+RAW_WORD = re.compile(r"\braw\b")
+WINDOW_SLACK = float(os.environ.get("WIKI_GUARD_WINDOW_SLACK_SEC", "2"))
 
 
 def claude_stop_review(lines):
@@ -64,21 +80,74 @@ def claude_stop_review(lines):
     return False
 
 
+def epoch(d):
+    """대화 기록 한 줄의 시각(epoch 초). 없거나 못 읽으면 None."""
+    ts = d.get("timestamp")
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def recent_raw(since):
+    """since(epoch 초) 뒤에 바뀐 raw 기록의 (파일명, 저장 시각)."""
+    found = []
+    try:
+        with os.scandir(RAW_DIR) as it:
+            for e in it:
+                if RAW_FILE.match(e.name):
+                    m = e.stat().st_mtime
+                    if m >= since:
+                        found.append((e.name, m))
+    except OSError:
+        pass
+    return found
+
+
+def by_time(events, shells, ended):
+    """셸 후보 호출이 도는 동안 raw/ 기록이 바뀌었으면 그 호출을 기록 쓰기로 바꾼다.
+
+    shells 는 {events 의 자리: (호출 id, 시작 시각)}, ended 는 {호출 id: 결과가 돌아온 시각}.
+    결과가 아직 없는 호출(시각을 모르는 호출)은 보지 않는다.
+    """
+    spans = {}
+    for i, (cid, start) in shells.items():
+        end = ended.get(cid)
+        if start is not None and end is not None:
+            spans[i] = (start - WINDOW_SLACK, end + WINDOW_SLACK)
+    if not spans:
+        return events
+    files = recent_raw(min(a for a, _ in spans.values()))
+    for i, (a, b) in spans.items():
+        names = tuple(name for name, m in files if a <= m <= b)
+        if names:
+            events[i] = (events[i][0], "raw", False, names)
+    return events
+
+
 def claude_events(lines):
-    """(줄 번호, 종류, 수정 여부) — 종류는 call · raw · scheduled."""
+    """(줄 번호, 종류, 수정 여부, 시간으로 찾은 기록 이름) — 종류는 call · raw · scheduled."""
+    events, shells, ended = [], {}, {}
     first_prompt = True
     for n, line in enumerate(lines):
         try:
             d = json.loads(line)
         except ValueError:
             continue
+        if d.get("type") == "user":
+            c = d.get("message", {}).get("content")
+            for x in c if isinstance(c, list) else []:
+                if isinstance(x, dict) and x.get("type") == "tool_result" and x.get("tool_use_id"):
+                    ended[x["tool_use_id"]] = epoch(d)
         if d.get("type") == "user" and first_prompt and not d.get("isMeta"):
             c = d.get("message", {}).get("content")
             text = c if isinstance(c, str) else " ".join(x.get("text", "") for x in c or [] if isinstance(x, dict))
             if text.strip():
                 first_prompt = False
                 if text.lstrip().startswith("<scheduled-task"):
-                    yield n, "scheduled", False
+                    events.append((n, "scheduled", False, ()))
         if d.get("type") != "assistant":
             continue
         for item in d.get("message", {}).get("content") or []:
@@ -88,41 +157,57 @@ def claude_events(lines):
             blob = json.dumps(inp, ensure_ascii=False)
             if name in EDIT_TOOLS:
                 path = inp.get("file_path") or inp.get("notebook_path") or ""
-                yield n, ("raw" if RAW_MARK in path else "call"), True
+                events.append((n, ("raw" if RAW_MARK in path else "call"), True, ()))
             elif name == "Bash":
                 cmd = inp.get("command", "")
-                yield n, ("raw" if RAW_MARK in cmd and SHELL_WRITE.search(cmd) else "call"), False
+                if RAW_MARK in cmd and SHELL_WRITE.search(cmd):
+                    events.append((n, "raw", False, ()))
+                else:
+                    events.append((n, "call", False, ()))
+                    if RAW_WORD.search(cmd) and item.get("id"):
+                        shells[len(events) - 1] = (item["id"], epoch(d))
             elif name.startswith("mcp__"):
                 write = bool(MCP_WRITE.search(name.split("__")[-1]))
-                yield n, ("raw" if write and RAW_MARK in blob else "call"), write
+                events.append((n, ("raw" if write and RAW_MARK in blob else "call"), write, ()))
             else:
-                yield n, "call", False
+                events.append((n, "call", False, ()))
+    return by_time(events, shells, ended)
 
 
 def codex_events(lines):
+    events, shells, ended = [], {}, {}
     for n, line in enumerate(lines):
         try:
             d = json.loads(line)
         except ValueError:
             continue
         p = d.get("payload") or {}
-        if d.get("type") != "response_item" or p.get("type") not in ("custom_tool_call", "function_call"):
+        if d.get("type") != "response_item":
+            continue
+        if p.get("type") in ("custom_tool_call_output", "function_call_output"):
+            if p.get("call_id"):
+                ended[p["call_id"]] = epoch(d)
+            continue
+        if p.get("type") not in ("custom_tool_call", "function_call"):
             continue
         text = str(p.get("input") or p.get("arguments") or "")
         if RAW_MARK in text and SHELL_WRITE.search(text):
-            yield n, "raw", False
+            events.append((n, "raw", False, ()))
         else:
-            yield n, "call", bool(CODEX_EDIT.search(text)) or p.get("name") == "apply_patch"
+            events.append((n, "call", bool(CODEX_EDIT.search(text)) or p.get("name") == "apply_patch", ()))
+            if RAW_WORD.search(text) and p.get("call_id"):
+                shells[len(events) - 1] = (p["call_id"], epoch(d))
+    return by_time(events, shells, ended)
 
 
 def decide(events, start):
     """끝내도 되는가. start 는 지난번에 물어본 줄 — 그 뒤 일만 센다."""
     events = list(events)
-    if any(k == "scheduled" for _, k, _ in events):
+    if any(k == "scheduled" for _, k, _, _ in events):
         return False, 0, 0
-    last_raw = max([n for n, k, _ in events if k == "raw"] or [-1])
+    last_raw = max([n for n, k, _, _ in events if k == "raw"] or [-1])
     begin = max(last_raw, start)
-    calls = [m for n, k, m in events if k == "call" and n > begin]
+    calls = [m for n, k, m, _ in events if k == "call" and n > begin]
     edits = sum(1 for m in calls if m)
     return (edits >= 1 or len(calls) >= MIN_CALLS), len(calls), edits
 
@@ -130,9 +215,10 @@ def decide(events, start):
 def ahead_names(events, lines, after):
     """after 줄 뒤에 이 세션이 쓴 raw 기록 중 파일명 시각이 저장 시각(mtime)보다 늦은 것."""
     names = set()
-    for n, kind, _ in events:
+    for n, kind, _, found in events:
         if kind == "raw" and n > after:
             names.update(RAW_NAME.findall(lines[n]))
+            names.update(found)                   # 경로를 변수로 적어 줄에 이름이 없어도 시간으로 찾은 것
     now = datetime.datetime.now()
     bad = []
     for name in sorted(names):
