@@ -109,6 +109,24 @@ class GuardTests(unittest.TestCase):
                               answer("썼습니다.")])
         self.assertBlocked(out, "파일 notes.md: 줄표")
 
+    def test_memory_index_separator_dash_passes(self):
+        line = "- [제목](note.md) %s 설명 한 줄\n" % DASH
+        path = self.put("MEMORY.md", line)
+        out = self.run_guard([prompt("기억해"), tool("Write", file_path=path, content=line), answer("남겼습니다.")])
+        self.assertEqual(out, {})
+
+    def test_memory_dash_outside_index_separator_is_checked(self):
+        text = "- [제목](note.md) %s 설명 %s 덧붙임\n본문 %s 줄\n" % (DASH, DASH, DASH)
+        path = self.put("MEMORY.md", text)
+        out = self.run_guard([prompt("기억해"), tool("Write", file_path=path, content=text), answer("남겼습니다.")])
+        self.assertBlocked(out, "파일 MEMORY.md: 줄표")
+
+    def test_index_style_dash_in_other_md_is_checked(self):
+        line = "- [제목](note.md) %s 설명\n" % DASH
+        path = self.put("notes.md", line)
+        out = self.run_guard([prompt("써 줘"), tool("Write", file_path=path, content=line), answer("썼습니다.")])
+        self.assertBlocked(out, "파일 notes.md: 줄표")
+
     def test_edit_checks_only_new_text(self):
         out = self.run_guard([prompt("고쳐 줘"), tool("Edit", file_path="/x/a.md", old_string="옛 %s 글" % DASH,
                                                        new_string="새 글"), answer("고쳤습니다.")])

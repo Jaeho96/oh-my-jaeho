@@ -14,7 +14,8 @@
   지금 파일 전체로 하므로 기존 코드 블록 안을 고친 글은 문장으로 보지 않는다. 고쳐 놓은 글, 줄 일부 수정의 손대지 않은 부분은 보지 않는다.
 - 커밋: git 옵션(-C 경로, -c 키=값)을 건너 commit 을 찾고 메시지만 꺼낸다(-m, --message, -F 파일, -F - 의 heredoc,
   -m "$(cat <<'EOF' … EOF)"). 같은 명령줄의 다른 명령은 보지 않는다. Codex 는 exec 자바스크립트의 cmd 문자열에서 찾는다.
-빼는 것: 코드 블록, 백틱 안, 「> 」 인용 줄, 「」 안, 기호만 든 괄호, 기호와 금지어를 설명하는 rules/vocabulary.md · rules/korean-style.md.
+빼는 것: 코드 블록, 백틱 안, 「> 」 인용 줄, 「」 안, 기호만 든 괄호, 기호와 금지어를 설명하는 rules/vocabulary.md · rules/korean-style.md,
+MEMORY.md 색인 줄(- [제목](파일.md) — 설명)의 구분 줄표(메모리 지침이 정한 형식, 2026-11-04).
 연결어미 뒤 쉼표는 오탐이 많아 검사하지 않는다(지침으로만 둔다).
 - 같은 사용자 지시 안에서는 한 번만 되돌린다. 세션마다 마지막으로 되돌린 줄을 적어 두고, 그 줄이 지금 지시 뒤면 통과시킨다.
   stop_hook_active 만 보고 통과시키지 않는다. 그 값은 다른 Stop 훅(위키 기록 확인, Codex 검토)이 되돌려도 켜져서,
@@ -74,6 +75,18 @@ def mask(text):
 
 def skip_file(path):
     return (os.path.basename(os.path.dirname(path)), os.path.basename(path)) in SKIP_FILES
+
+
+MEMORY_INDEX = re.compile(r"(?m)^([ \t]*[-*][ \t]+\[[^\]\n]*\]\([^)\n]*\)[ \t]*)[—―]")
+
+
+def mask_file(path, text):
+    """파일 글의 mask. MEMORY.md 는 색인 줄(- [제목](파일.md) — 설명)의 구분 줄표만 지운다.
+    Claude Code 메모리 지침이 정한 색인 형식이라 고칠 수 없다(2026-11-04, 같은 지적 두 번). 설명 안의 줄표는 그대로 본다."""
+    text = mask(text)
+    if os.path.basename(path) == "MEMORY.md":
+        text = MEMORY_INDEX.sub(lambda m: m.group(1) + " ", text)
+    return text
 
 
 def js_unescape(text):
@@ -563,8 +576,8 @@ def file_targets(path, ops):
     out = []
     spans = net_spans(base, final)
     if spans:
-        out.append((keep(mask(final), spans) if path.endswith(".md") else None, keep(final, spans)))
-    masked = mask(final)                # 기준에 넣지 못한 수정: 새 글이 지금 파일에 있는 자리를 찾아 파일 전체 기준으로 본다
+        out.append((keep(mask_file(path, final), spans) if path.endswith(".md") else None, keep(final, spans)))
+    masked = mask_file(path, final)     # 기준에 넣지 못한 수정: 새 글이 지금 파일에 있는 자리를 찾아 파일 전체 기준으로 본다
     for kind, text, extra in rest:
         pairs = extra.get("edits") or [(None, text, False)]
         if extra.get("tool") == "patch":    # 패치는 더한 줄마다, 바로 앞에서 뺀 줄과 짝지어 본다(문맥 줄이 끼어 한 덩어리로는 못 찾는다)
