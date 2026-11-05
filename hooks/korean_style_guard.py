@@ -7,6 +7,8 @@
 - 쓰지 않는 단어(rules/vocabulary.md 의 한국어 금지어): 답, .md 파일, 커밋 메시지. 영어 금지어는 언급에만 나와 오탐이 많아 뺀다
 - 손으로 쓴 한글 유니코드 이스케이프(백슬래시 u 와 네 자리): 이번에 쓴 모든 파일, 커밋 메시지. 정규식 범위(… - …)는 코드라 뺀다
 - 커밋 메시지의 Claude 표기(Co-Authored-By 의 Claude · Anthropic, Generated with Claude Code)
+- 하네스 안내문을 답으로 옮긴 것(줄 첫머리, 인용 밖): 답. 그 문장만 문장 검사에서 빼고 "안내문을 옮겼다"고 따로 알린다. 줄표라고만 알리면
+  모델이 남의 글 인용으로 보고 넘어간다(2026-11-05 flow-cohort 세션이 "The user hasn't heard from you…"를 그대로 출력했다)
 
 보는 범위: 마지막 사용자 지시 뒤에 이 세션이 쓴 답, 파일에 새로 쓴 글, git commit 의 메시지.
 - 파일: 이번 턴 첫 수정 직전 파일과 지금 파일을 비교해, 이번 턴에 바뀌어 지금 남아 있는 단어만 본다. 수정 직전 파일은 지금 파일에서
@@ -48,6 +50,13 @@ WORD = re.compile(r"고아(?!성)")
 ESCAPE = re.compile(r"\\u(?:a[c-f]|b[0-9a-f]|c[0-9a-f]|d[0-7]|31[3-8])[0-9a-f]{2}", re.I)
 CREDIT = re.compile(r"co-authored-by:[^\n]*(?:claude|anthropic)|generated with \[?claude code", re.I)
 PROSE_CHECKS = (("굵게", BOLD), ("줄표", DASH), ("쓰지 않는 단어", WORD))
+# Claude Code 가 오래 말이 없을 때 넣는 안내문. 인용을 지운 글에서 줄 첫머리에 온 것만 옮긴 것으로 본다.
+# 백틱 · 「」 · 인용 줄 안은 mask 가 이미 지웠고, 큰따옴표나 문장 뒤에 온 것은 인용이다. 지울 때는 안내문의 영어 낱말만 지운다.
+# 끝을 "마침표까지"로 잡으면 마침표 없이 이어 쓴 한국어까지 지워 그 위반을 놓친다(2026-11-05 Codex 검토).
+ECHO = re.compile(r"(?m)^[ \t]*The user hasn't heard from you in a while"
+                  r"(?:[ \t]*[—―][ \t]*say in a few words(?: what you're doing(?:, then continue)?)?\.?)?")
+ECHO_HIT = ("- 답: 시스템 안내문(The user hasn't heard from you…)을 답으로 그대로 옮겼다. 인용이 아니다. "
+            "무엇을 하던 중이었는지 한국어로 한 줄 다시 알린다")
 EDIT_TOOLS = {"Write", "Edit", "MultiEdit"}
 
 GIT_COMMIT = re.compile(r"""\bgit((?:\s+(?:-[cC]\s+(?:"[^"]*"|'[^']*'|\S+)|--[\w-]+(?:=\S+)?))*)\s+commit\b""")
@@ -623,7 +632,11 @@ def find(pieces):
     targets = []                       # (어디, 문장 검사할 글, 원문)
     for _, kind, path, text, cwd, extra in pieces:
         if kind == "answer" and text:
-            targets.append(("답", mask(text), None))
+            body = mask(text)
+            if ECHO.search(body):
+                hits.append(ECHO_HIT)
+                body = ECHO.sub(blank, body)
+            targets.append(("답", body, None))
         elif kind in ("write", "edit") and path and not skip_file(path):
             files.setdefault(path, []).append((kind, text, extra))
         elif kind == "shell" and text:

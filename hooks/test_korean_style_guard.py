@@ -99,6 +99,44 @@ class GuardTests(unittest.TestCase):
         text = "`a %s b` 와 `**굵게**는` 은 코드다.\n```\nx %s y\n```\n> 인용 %s 원문\n끝났습니다." % (DASH, DASH, DASH)
         self.assertEqual(self.run_guard([prompt("해 줘"), answer(text)]), {})
 
+    def test_echoed_harness_reminder_is_named_not_dash(self):
+        echo = "The user hasn't heard from you in a while %s say in a few words what you're doing, then continue." % DASH
+        out = self.run_guard([prompt("해 줘"), answer(echo)])
+        self.assertBlocked(out, "시스템 안내문")
+        self.assertNotIn("답: 줄표", out["reason"])
+
+    def test_dash_outside_echoed_reminder_is_still_checked(self):
+        text = "The user hasn't heard from you in a while %s say in a few words.\n정리했습니다 %s 끝." % (DASH, DASH)
+        out = self.run_guard([prompt("해 줘"), answer(text)])
+        self.assertBlocked(out, "시스템 안내문", "답: 줄표 …정리했습니다")
+        self.assertNotIn("say in a few", out["reason"])
+
+    def test_quoted_harness_reminder_is_not_echo(self):
+        head = "The user hasn't heard from you in a while %s say in a few words" % DASH
+        quoted = ["안내문 `%s…`를 그대로 옮겼습니다." % head,
+                  "Claude Code 안내문(\"%s…\")에 있습니다." % head,
+                  "> %s what you're doing, then continue.\n위는 안내문입니다." % head,
+                  "안내문 원문입니다.\n```\n%s what you're doing, then continue.\n```" % head]
+        for text in quoted:
+            out = self.run_guard([prompt("해 줘"), answer(text)], session="q%d" % quoted.index(text))
+            self.assertNotIn("시스템 안내문", out.get("reason", ""), text)
+
+    def test_other_violation_on_echo_line_is_still_checked(self):
+        text = ("The user hasn't heard from you in a while %s say in a few words what you're doing, then continue."
+                " 지금 **표**를 고칩니다 %s 끝." % (DASH, DASH))
+        out = self.run_guard([prompt("해 줘"), answer(text)])
+        self.assertBlocked(out, "시스템 안내문", "답: 굵게", "답: 줄표 …지금 **표**를 고칩니다")
+        self.assertNotIn("say in a few", out["reason"])         # 안내문 안의 줄표는 따로 세지 않는다
+
+    def test_violation_after_echo_without_period_is_checked(self):
+        tails = ["say in a few words what you're doing, then continue 지금 **표**를 고칩니다.",
+                 "say in a few words 지금 **표**를 고칩니다.",
+                 "say in a few words what you're doing 지금 **표**를 고칩니다."]
+        for i, tail in enumerate(tails):
+            text = "The user hasn't heard from you in a while %s %s" % (DASH, tail)
+            out = self.run_guard([prompt("해 줘"), answer(text)], session="t%d" % i)
+            self.assertBlocked(out, "시스템 안내문", "답: 굵게")
+
     def test_only_current_turn(self):
         out = self.run_guard([prompt("하나"), answer("앞 턴 %s 줄표" % DASH), prompt("둘"), answer("깨끗한 답입니다.")])
         self.assertEqual(out, {})
