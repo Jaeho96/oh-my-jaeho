@@ -12,6 +12,8 @@
   2026-10-23 점검에서 Claude Code 기록 108건 중 33건이 실제보다 최대 34분 늦은 이름이었다.
   지난번 확인 뒤에 쓴 기록 중 MAX_AGE 안에 저장된 것만 본다. 이미 올라가 링크가 걸린 옛 기록의 이름을 바꾸게 하면 안 된다.
 - 오류가 나면 언제나 통과시킨다. 훅 고장이 작업 종료를 막으면 안 된다.
+- Claude Code 자동 메모리(~/.claude/projects/*/memory/)를 고친 것은 파일 수정으로 세지 않는다(도구 호출로만 센다).
+  메모리만 고친 턴을 막아 사용자가 「Stop hook error」를 봤다(2026-11-06).
 - 기록을 셀 때 Write · Edit 와 MCP 는 경로 글자로, 셸은 시간으로 본다. 셸 호출이 시작해서 결과가 돌아오기까지
   raw/ 기록 파일이 바뀌었고 명령에 raw 라는 낱말이 있으면 그 호출이 쓴 기록이다. 경로를 변수로 조립해도 센다.
   예전에는 셸 명령에 "LLM Wiki/raw/" 가 글자 그대로 있어야만 세서, 같은 일로 다섯 번 잘못 막았다
@@ -50,6 +52,9 @@ REVIEW_PROMPT = re.compile(r"\s*<task>\s*" + re.escape(REVIEW_MARK))
 # 명령에 raw 라는 낱말이 있어야 후보로 본다. 오래 도는 명령(예: codex exec) 동안 다른 쪽이
 # 쓴 기록을 내 것으로 세지 않기 위해서다.
 RAW_FILE = re.compile(r"^\d{8}T\d{6}-.+\.md$")
+# Claude Code 자동 메모리(~/.claude/projects/<프로젝트>/memory/) 쓰기는 작업 파일 수정으로 세지 않는다.
+# 사용자 지적을 메모리에 적기만 한 턴을 막아 「Stop hook error」가 떴다(2026-11-06). 도구 호출로는 센다.
+MEMORY_PATH = re.compile(r"/\.claude/projects/[^/]+/memory/")
 RAW_WORD = re.compile(r"\braw\b")
 WINDOW_SLACK = float(os.environ.get("WIKI_GUARD_WINDOW_SLACK_SEC", "2"))
 
@@ -157,7 +162,10 @@ def claude_events(lines):
             blob = json.dumps(inp, ensure_ascii=False)
             if name in EDIT_TOOLS:
                 path = inp.get("file_path") or inp.get("notebook_path") or ""
-                events.append((n, ("raw" if RAW_MARK in path else "call"), True, ()))
+                if RAW_MARK in path:
+                    events.append((n, "raw", True, ()))
+                else:
+                    events.append((n, "call", not MEMORY_PATH.search(path), ()))
             elif name == "Bash":
                 cmd = inp.get("command", "")
                 if RAW_MARK in cmd and SHELL_WRITE.search(cmd):
