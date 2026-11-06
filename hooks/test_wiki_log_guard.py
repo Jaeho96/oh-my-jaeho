@@ -78,6 +78,19 @@ class GuardTests(unittest.TestCase):
         rows = self.edits() + [claude_line("tool", name="Write", input={"file_path": os.path.expanduser(RAW) + "/x.md"})]
         self.assertEqual(self.run_hook(rows), {})
 
+    def test_memory_only_write_passes(self):
+        # 2026-11-06: 사용자 지적을 자동 메모리에 적기만 한 턴을 막았다
+        mem = os.path.expanduser("~/.claude/projects/-repo/memory/feedback-x.md")
+        rows = [claude_line("prompt", text="그렇게 부르지 마"),
+                claude_line("tool", name="Write", input={"file_path": mem}),
+                claude_line("tool", name="Bash", input={"command": "echo '- x' >> \"%s\"" % os.path.join(os.path.dirname(mem), "MEMORY.md")})]
+        self.assertEqual(self.run_hook(rows), {})
+
+    def test_memory_write_with_real_edit_still_blocks(self):
+        mem = os.path.expanduser("~/.claude/projects/-repo/memory/feedback-x.md")
+        rows = self.edits() + [claude_line("tool", name="Write", input={"file_path": mem})]
+        self.assertEqual(self.run_hook(rows).get("decision"), "block")
+
     def test_heredoc_log_counts(self):
         rows = self.edits() + [claude_line("tool", name="Bash", input={"command": "cat > \"%s/x.md\" <<'EOF'" % RAW})]
         self.assertEqual(self.run_hook(rows), {})
