@@ -99,6 +99,45 @@ class GuardTests(unittest.TestCase):
         text = "`a %s b` 와 `**굵게**는` 은 코드다.\n```\nx %s y\n```\n> 인용 %s 원문\n끝났습니다." % (DASH, DASH, DASH)
         self.assertEqual(self.run_guard([prompt("해 줘"), answer(text)]), {})
 
+    def test_double_quoted_text_is_skipped(self):
+        text = ('저장소 제목은 "v2.37.0 %s 2026-11-10" 형식입니다. 둥근 따옴표 “가 %s 나”와 "**굵게**는"도 인용입니다.\n'
+                '금지어 "고아"는 언급입니다.' % (DASH, DASH))
+        self.assertEqual(self.run_guard([prompt("해 줘"), answer(text)]), {})
+
+    def test_dash_outside_double_quotes_is_checked(self):
+        text = '"앞 인용"과 제 글 %s 끝, "뒤 인용"입니다.' % DASH
+        self.assertBlocked(self.run_guard([prompt("해 줘"), answer(text)]), "답: 줄표")
+        unpaired = '따옴표 하나 " 뒤에 쓴 글 %s 끝입니다.' % DASH          # 짝이 없으면 지우지 않는다
+        self.assertBlocked(self.run_guard([prompt("해 줘"), answer(unpaired)], session="s2"), "답: 줄표")
+        long_quote = '"%s %s"' % ("가" * 201, DASH)                          # 200자를 넘으면 인용으로 보지 않는다
+        self.assertBlocked(self.run_guard([prompt("해 줘"), answer(long_quote)], session="s3"), "답: 줄표")
+
+    def test_wrong_quote_pairs_do_not_hide_text_outside_quotes(self):
+        # 속성값 사이의 글: href="…"> 와 class="…" 의 따옴표를 짝으로 보면 그 사이 글이 지워진다
+        html = '<a href="https://x.test">링크 %s 설명</a> <b class="y">굵게</b>' % DASH
+        # 한 인용의 닫는 따옴표와 다음 인용의 여는 따옴표: "가" 와 "나" 사이 글
+        between = '그는 "가 %s 나 라고 했다 그리고 "다"를 남겼다.' % DASH
+        spaced = '시작 " 여기 %s 남은 글 " 끝입니다.' % DASH
+        # 숫자 뒤 따옴표(인치)는 여는 따옴표가 아니다
+        inch = '모니터는 27"형 %s 설명"을 본다.' % DASH
+        # 닫지 않은 따옴표가 있는 줄: 어디까지가 인용인지 알 수 없어 그 줄은 지우지 않는다
+        unclosed = '열린 "따옴표 %s 제 글("인용")' % DASH
+        unclosed_curly = '“열린 %s 글 “인용”' % DASH
+        extra_close = '“가 %s 나 ”다”' % DASH          # 여는 것 1, 닫는 것 2
+        # 둥근 인용 안의 곧은 따옴표가 바깥 곧은 따옴표와 짝이 되면 안 된다(먼저 연 쪽이 짝을 차지한다)
+        mixed = '“인용 "가” 제 글 %s 나" 끝' % DASH
+        cases = [html, between, spaced, inch, unclosed, unclosed_curly, extra_close, mixed]
+        for i, text in enumerate(cases):
+            out = self.run_guard([prompt("해 줘"), answer(text)], session="w%d" % i)
+            self.assertBlocked(out, "답: 줄표")
+
+    def test_double_quotes_in_frontmatter_are_checked(self):
+        content = '---\ntitle: "제목 %s 부제"\n---\n본문은 "원문 %s 인용"을 옮겼다.\n' % (DASH, DASH)
+        path = self.put("log.md", content)
+        out = self.run_guard([prompt("써 줘"), tool("Write", file_path=path, content=content), answer("썼습니다.")])
+        self.assertBlocked(out, "파일 log.md: 줄표", 'title: "제목')
+        self.assertEqual(out["reason"].count("- 파일 log.md: 줄표"), 1)     # 본문 인용 안 줄표는 세지 않는다
+
     def test_echoed_harness_reminder_is_named_not_dash(self):
         echo = "The user hasn't heard from you in a while %s say in a few words what you're doing, then continue." % DASH
         out = self.run_guard([prompt("해 줘"), answer(echo)])
