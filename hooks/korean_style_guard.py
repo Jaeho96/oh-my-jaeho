@@ -16,7 +16,8 @@
   지금 파일 전체로 하므로 기존 코드 블록 안을 고친 글은 문장으로 보지 않는다. 고쳐 놓은 글, 줄 일부 수정의 손대지 않은 부분은 보지 않는다.
 - 커밋: git 옵션(-C 경로, -c 키=값)을 건너 commit 을 찾고 메시지만 꺼낸다(-m, --message, -F 파일, -F - 의 heredoc,
   -m "$(cat <<'EOF' … EOF)"). 같은 명령줄의 다른 명령은 보지 않는다. Codex 는 exec 자바스크립트의 cmd 문자열에서 찾는다.
-빼는 것: 코드 블록, 백틱 안, 「> 」 인용 줄, 「」 안, 기호만 든 괄호, 기호와 금지어를 설명하는 rules/vocabulary.md · rules/korean-style.md,
+빼는 것: 코드 블록, 백틱 안, 「> 」 인용 줄, 「」 안, 큰따옴표 안(한 줄 안, 파일 첫머리 YAML 머리말은 빼지 않는다),
+기호만 든 괄호, 기호와 금지어를 설명하는 rules/vocabulary.md · rules/korean-style.md,
 MEMORY.md 색인 줄(- [제목](파일.md) — 설명)의 구분 줄표(메모리 지침이 정한 형식, 2026-11-04).
 연결어미 뒤 쉼표는 오탐이 많아 검사하지 않는다(지침으로만 둔다).
 - 같은 사용자 지시 안에서는 한 번만 되돌린다. 세션마다 마지막으로 되돌린 줄을 적어 두고, 그 줄이 지금 지시 뒤면 통과시킨다.
@@ -51,7 +52,7 @@ ESCAPE = re.compile(r"\\u(?:a[c-f]|b[0-9a-f]|c[0-9a-f]|d[0-7]|31[3-8])[0-9a-f]{2
 CREDIT = re.compile(r"co-authored-by:[^\n]*(?:claude|anthropic)|generated with \[?claude code", re.I)
 PROSE_CHECKS = (("굵게", BOLD), ("줄표", DASH), ("쓰지 않는 단어", WORD))
 # Claude Code 가 오래 말이 없을 때 넣는 안내문. 인용을 지운 글에서 줄 첫머리에 온 것만 옮긴 것으로 본다.
-# 백틱 · 「」 · 인용 줄 안은 mask 가 이미 지웠고, 큰따옴표나 문장 뒤에 온 것은 인용이다. 지울 때는 안내문의 영어 낱말만 지운다.
+# 백틱 · 「」 · 큰따옴표 · 인용 줄 안은 mask 가 이미 지웠고, 문장 뒤에 온 것은 인용이다. 지울 때는 안내문의 영어 낱말만 지운다.
 # 끝을 "마침표까지"로 잡으면 마침표 없이 이어 쓴 한국어까지 지워 그 위반을 놓친다(2026-11-05 Codex 검토).
 ECHO = re.compile(r"(?m)^[ \t]*The user hasn't heard from you in a while"
                   r"(?:[ \t]*[—―][ \t]*say in a few words(?: what you're doing(?:, then continue)?)?\.?)?")
@@ -72,12 +73,43 @@ def blank(m):
     return re.sub(r"[^\n]", " ", m.group(0))
 
 
+# 큰따옴표 인용. 2026-11-02부터 인용 · 화면 글자 · 예문을 「」 대신 큰따옴표로 감싼다(korean-style.md).
+# 짝을 잘못 맞춰 인용 밖 글까지 지우지 않게 좁게 본다(2026-11-10 Codex 검토).
+# - 한 줄 안, 200자까지만 본다.
+# - 여는 따옴표 앞이 = · 영문 · 숫자 · 역슬래시면 인용이 아니다. href="a">글</a> <b class="c"> 처럼
+#   속성값 사이의 글(>글</a> <b class=)을 인용으로 보지 않는다.
+# - 따옴표 안쪽 양 끝이 공백이면 짝이 아니다. "가" 다음 글 " 와 같이 한 따옴표의 닫는 쪽과 다른 따옴표의 여는 쪽이다.
+# - 줄 안의 따옴표 개수가 맞지 않으면(곧은 따옴표가 홀수, 둥근 따옴표의 여닫이 수가 다름) 그 줄은 지우지 않는다.
+#   닫지 않은 따옴표가 있으면 어디까지가 인용인지 알 수 없어서, 놓치기보다 지적하는 쪽을 고른다.
+# - 곧은 따옴표와 둥근 따옴표는 한 번에 왼쪽부터 훑어 먼저 연 쪽이 짝을 차지한다. 따로 훑으면 “인용 "가” 밖 글 "
+#   처럼 둥근 인용 안의 곧은 따옴표가 바깥 따옴표와 짝이 되어 밖 글을 지운다.
+#   개수가 맞지 않는 종류는 짝을 차지하되 지우지 않는다.
+QUOTE = re.compile(r'(?<![=A-Za-z0-9_\\])"(?=[^\s"])[^"\n]{1,200}(?<=\S)"|“[^“”\n]{1,200}”')
+
+
+def mask_quotes(text):
+    """큰따옴표 인용을 지운다. 따옴표 개수가 맞는 종류만 지운다(위 규칙)."""
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        ok = {'"': line.count('"') % 2 == 0, "“": line.count("“") == line.count("”")}
+        lines[i] = QUOTE.sub(lambda m: blank(m) if ok[m.group(0)[0]] else m.group(0), line)
+    return "\n".join(lines)
+
+
+# 파일 첫머리 YAML 머리말(--- … ---). title: "…" 같은 값은 내가 쓴 글이라 큰따옴표여도 지우지 않는다.
+FRONTMATTER = re.compile(r"\A---[ \t]*\n.*?\n---[ \t]*(?:\n|\Z)", re.S)
+
+
 def mask(text):
-    """코드 블록 · 백틱 안 · 인용 줄 · 「」 안 · 기호만 든 괄호를 공백으로 지운 글. 길이와 자리는 그대로다.
-    「」 는 인용 · 화면 글자 · 예문을 감싸는 데 쓰므로(korean-style.md) 금지어나 기호를 언급할 때도 걸리지 않는다."""
+    """코드 블록 · 백틱 안 · 인용 줄 · 「」 안 · 큰따옴표 안 · 기호만 든 괄호를 공백으로 지운 글. 길이와 자리는 그대로다.
+    「」 와 큰따옴표는 인용 · 화면 글자 · 예문을 감싸는 데 쓰므로(korean-style.md) 남의 글을 옮기거나 금지어 · 기호를
+    언급할 때 걸리지 않는다. 파일 첫머리 YAML 머리말의 큰따옴표는 지우지 않는다(2026-11-10)."""
     text = re.sub(r"```.*?```", blank, text, flags=re.S)
     text = re.sub(r"`[^`\n]*`", blank, text)
     text = re.sub(r"「[^」\n]*」", blank, text)
+    head = FRONTMATTER.match(text)
+    at = head.end() if head else 0
+    text = text[:at] + mask_quotes(text[at:])
     text = re.sub(r"\(\s*[—―]\s*\)", blank, text)
     return re.sub(r"(?m)^[ \t]*>.*$", blank, text)
 
