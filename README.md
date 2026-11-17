@@ -70,7 +70,7 @@ python3 tools/korean_style_hooks.py --apply    # Codex hooks.json 에 SessionSta
 
 ## 공유 위키를 여러 맥에서 쓰기
 
-Claude Code·Codex가 함께 쓰는 마크다운 위키(작업 기록 `raw/`, 지식 `omx_wiki/`) 폴더를 비공개 git 저장소로 두고 여러 맥에서 맞춘다.
+Claude Code·Codex가 함께 쓰는 마크다운 위키(작업 기록 `raw/`, 지식 `knowledge/`) 폴더를 비공개 git 저장소로 두고 여러 맥에서 맞춘다.
 
 ```bash
 python3 tools/sync.py --apply                                        # 훅 파일 링크 (~/.claude/hooks/)
